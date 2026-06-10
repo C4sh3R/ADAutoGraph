@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADAutoGraph</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main id="welcome" class="welcome">
+    <section class="welcome__hero">
+      <div class="brand">
+        <div class="brand__mark">AG</div>
+        <div>
+          <h1>ADAutoGraph</h1>
+          <p>BloodHound-style AD graphing with ADAutoPwn abuse context.</p>
+        </div>
+      </div>
+      <form id="importForm" class="import">
+        <label class="field">
+          <span>Project / domain name</span>
+          <input id="domainName" name="name" placeholder="auto-detect from zip">
+        </label>
+        <label class="drop" id="drop">
+          <input id="zipInput" name="zip" type="file" accept=".zip">
+          <span class="drop__icon">⇧</span>
+          <strong>Drop BloodHound zip</strong>
+          <small>or click to select a collector archive</small>
+        </label>
+        <button class="primary" type="submit">Import domain</button>
+        <div id="importStatus" class="status"></div>
+      </form>
+    </section>
+    <section class="domains">
+      <div class="domains__head">
+        <h2>Domains</h2>
+        <button id="refreshDomains" class="ghost">Refresh</button>
+      </div>
+      <div id="domainsList" class="domains__list"></div>
+    </section>
+  </main>
+
+  <section id="app" class="app hidden">
+    <canvas id="graph"></canvas>
+    <div id="emptyGraph" class="empty-graph">
+      <div class="empty-graph__icon">⌁</div>
+      <h2>Build the graph as you investigate</h2>
+      <p>Search an object, choose a view, or mark a node as owned and build attack paths. The canvas only loads the context you ask for.</p>
+      <div class="empty-graph__chips">
+        <span>Search user/group/computer</span>
+        <span>Open ACLs</span>
+        <span>Mark owned → Attack paths</span>
+      </div>
+    </div>
+    <header class="topbar glass">
+      <button id="backBtn" class="iconbtn" title="Domains">⌂</button>
+      <div>
+        <div id="activeDomain" class="topbar__title"></div>
+        <div id="graphMeta" class="topbar__meta"></div>
+      </div>
+    </header>
+    <div id="domainStats" class="domain-stats glass"></div>
+    <div class="search glass">
+      <span>⌕</span>
+      <input id="searchInput" placeholder="Search users, groups, computers..." autocomplete="off">
+      <div id="searchResults" class="search__results"></div>
+    </div>
+    <nav class="rail glass">
+      <button data-view="overview" class="view active" title="Smart overview"><span>◎</span>Overview</button>
+      <button data-view="paths" class="view" title="Owned to high-value attack paths"><span>↯</span>Attack paths</button>
+      <button data-view="acl" class="view" title="Abusable ACLs"><span>⚔</span>ACLs</button>
+      <button data-view="highvalue" class="view" title="High value"><span>★</span>High value</button>
+      <button data-view="owned" class="view" title="Owned"><span>☠</span>Owned</button>
+      <button data-view="all" class="view" title="Top graph nodes"><span>◇</span>All</button>
+    </nav>
+    <aside id="panel" class="panel glass">
+      <button id="closePanel" class="panel__close">×</button>
+      <div id="panelBody"></div>
+    </aside>
+    <div class="legend glass">
+      <span><i class="dot user"></i>User</span>
+      <span><i class="dot group"></i>Group</span>
+      <span><i class="dot computer"></i>Computer</span>
+      <span><i class="dot domain"></i>Domain</span>
+      <span><i class="line critical"></i>Critical</span>
+      <span><i class="line high"></i>High</span>
+      <span><i class="line medium"></i>Medium</span>
+    </div>
+    <div class="quickbar glass">
+      <button id="fitBtn" title="Fit graph">Fit</button>
+      <button id="clearBtn" title="Clear canvas">Clear</button>
+      <span id="statusText">Ready</span>
+    </div>
+    <div id="hoverTip" class="hover-tip"></div>
+    <div id="toast" class="toast"></div>
+  </section>
+  <script src="/static/app.js"></script>
+</body>
+</html>

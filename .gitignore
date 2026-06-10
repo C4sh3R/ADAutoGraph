@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+env/
+
+# Local imported graph data
+data/*.db
+data/*.db-*
+data/upload_*.zip
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

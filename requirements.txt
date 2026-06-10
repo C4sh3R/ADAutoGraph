@@ -1,0 +1,14 @@
+# ADAutoGraph currently has no third-party Python dependencies.
+#
+# Runtime:
+#   Python 3.10+
+#
+# Used from the Python standard library:
+#   argparse
+#   cgi
+#   json
+#   os
+#   pathlib
+#   sqlite3
+#   zipfile
+#   http.server
