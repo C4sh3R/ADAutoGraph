@@ -811,8 +811,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/import":
                 form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+                # NB: use `is None`, never `not fileitem` — cgi.FieldStorage.__bool__
+                # raises TypeError("Cannot be converted to bool.") for a single file
+                # field (its .list is None), which would 500 every upload.
                 fileitem = form["zip"] if "zip" in form else None
-                if not fileitem or not getattr(fileitem, "file", None):
+                if fileitem is None or not getattr(fileitem, "file", None):
                     return self.send_json({"error": "missing zip"}, 400)
                 name = form.getfirst("name") or None
                 tmp = DATA / ("upload_%d.zip" % int(time.time() * 1000))
