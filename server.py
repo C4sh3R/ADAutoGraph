@@ -4,6 +4,7 @@ import cgi
 import json
 import os
 import posixpath
+import re
 import sqlite3
 import sys
 import time
@@ -334,8 +335,49 @@ def parse_bloodhound(path, domain_name=None):
     return domain_name, list(nodes.values()), edges
 
 
-def import_zip(path, requested_name=None, source=None):
+def mark_owned(nodes, owned):
+    """Flag nodes as owned from a list of principal names/SIDs (e.g. from
+    ADAutoPwn's compromised-principals file). Matches case-insensitively on
+    sAMAccountName, the label's local part (before @), a computer's DNS first
+    label, or the raw SID — with and without a trailing '$' for machine accounts."""
+    if not owned:
+        return 0
+    want = set()
+    for raw in owned:
+        n = (raw or "").strip().lower()
+        if not n:
+            continue
+        if "\\" in n:
+            n = n.split("\\", 1)[1]
+        if "@" in n:
+            n = n.split("@", 1)[0]
+        want.add(n)
+        want.add(n.rstrip("$"))
+    count = 0
+    for node in nodes:
+        cands = set()
+        sam = (node.get("props") or {}).get("samaccountname")
+        if sam:
+            cands.add(sam.lower())
+            cands.add(sam.lower().rstrip("$"))
+        lbl = (node.get("label") or "").lower()
+        if "@" in lbl:
+            lbl = lbl.split("@", 1)[0]
+        cands.add(lbl)
+        cands.add(lbl.rstrip("$"))
+        cands.add(lbl.split(".", 1)[0])      # computer DNS first component
+        cands.add((node.get("sid") or "").lower())
+        cands.discard("")
+        if cands & want:
+            node["owned"] = True
+            count += 1
+    return count
+
+
+def import_zip(path, requested_name=None, source=None, owned=None):
     domain_name, nodes, edges = parse_bloodhound(path, requested_name)
+    if owned:
+        mark_owned(nodes, owned)
     con = db()
     with con:
         cur = con.execute(
@@ -818,6 +860,10 @@ class Handler(BaseHTTPRequestHandler):
                 if fileitem is None or not getattr(fileitem, "file", None):
                     return self.send_json({"error": "missing zip"}, 400)
                 name = form.getfirst("name") or None
+                # Optional: a list of already-compromised principals to pre-mark as
+                # owned (names/SIDs, separated by newlines, commas or spaces).
+                owned_raw = form.getfirst("owned") or ""
+                owned = [p for p in re.split(r"[\s,]+", owned_raw) if p]
                 tmp = DATA / ("upload_%d.zip" % int(time.time() * 1000))
                 with tmp.open("wb") as out:
                     while True:
@@ -825,7 +871,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not chunk:
                             break
                         out.write(chunk)
-                domain_id = import_zip(tmp, name, getattr(fileitem, "filename", None))
+                domain_id = import_zip(tmp, name, getattr(fileitem, "filename", None), owned)
                 tmp.unlink(missing_ok=True)
                 return self.send_json({"ok": True, "domainId": domain_id})
             if path.startswith("/api/domain/") and "/owned/" in path:
