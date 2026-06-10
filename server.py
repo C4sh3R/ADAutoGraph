@@ -375,11 +375,21 @@ def mark_owned(nodes, owned):
 
 
 def import_zip(path, requested_name=None, source=None, owned=None):
-    domain_name, nodes, edges = parse_bloodhound(path, requested_name)
+    # Prefer the domain name embedded in the BloodHound data (canonical, e.g.
+    # CORP.LOCAL) — like the original. A caller-supplied name is only a fallback
+    # for when inference fails, so re-imports always normalise to the same name.
+    domain_name, nodes, edges = parse_bloodhound(path, None)
+    if (not domain_name or domain_name.lower() == "unknown.local") and requested_name:
+        domain_name = requested_name
     if owned:
         mark_owned(nodes, owned)
     con = db()
     with con:
+        # Re-importing the same domain REPLACES it instead of stacking duplicates
+        # (case-insensitive match; nodes/edges cascade-delete via the FK).
+        dup = con.execute("SELECT id FROM domains WHERE name=? COLLATE NOCASE", (domain_name,)).fetchone()
+        if dup:
+            con.execute("DELETE FROM domains WHERE id=?", (dup["id"],))
         cur = con.execute(
             "INSERT INTO domains(name, source, created_at, node_count, edge_count) VALUES(?,?,?,?,?)",
             (domain_name, source or os.path.basename(path), int(time.time()), len(nodes), len(edges)),
