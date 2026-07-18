@@ -18,7 +18,7 @@ Import a BloodHound collector ZIP, explore AD relationships through a clean, fas
 operator-focused web UI, and walk the abuse paths to Domain Admin — all offline,
 no Node, no Docker, **pure Python standard library**.
 
-<sub>Crafted & weaponized by **c4sh3r** · authorized engagements only · companion to [⚡ ADAutoPwn](https://github.com/C4sh3R/ADAutoPwn)</sub>
+<sub>Crafted & weaponized by **c4sh$r** · authorized engagements only · companion to [⚡ ADAutoPwn](https://github.com/C4sh3R/ADAutoPwn)</sub>
 
 ![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![stdlib](https://img.shields.io/badge/deps-zero%20(stdlib)-2ea44f?style=flat-square&logo=python&logoColor=white)
@@ -71,9 +71,13 @@ compromised as `owned`** — so the path lights up the moment the browser opens.
 | **Severity-aware ACLs** | 🔴 Critical (`DCSync`, `GenericAll`, `WriteDACL`, `GetChangesAll`) · 🟠 High (`WriteOwner`, `Owns`, `ForceChangePassword`, Shadow Credentials) · 🟡 Medium (`WriteSPN`, `AddMember`, `ReadGMSAPassword`, delegation) |
 | **Views** | `Overview` · `Attack paths` · `ACLs` · `High value` · `Owned` · `All` — one click each |
 | **Object inspector** | Full imported properties, **outbound + inbound** edges, abuse-focused edge list, raw property view |
-| **Attack-path builder** | Mark objects as `owned` → it traverses abuse edges + group membership to **high-value targets**, and falls back to the best reachable chain when there's no clean DA route |
+| **Attack-path builder** | Mark objects as `owned` → it traverses abuse edges, group membership **and OU containment** to **high-value targets**, and falls back to the best reachable chain when there's no clean DA route |
+| **Group & OU delegation** | The inspector expands rights a principal wields **indirectly** — through group membership (nested + `AddSelf`/`AddMember`) and through **control of an OU/Container** (`GenericAll` on an OU → the users it holds), each shown with the exact `via` trail. The writeup's `D.Anderson → Marketing OU → E.Rodriguez → Chiefs Marketing → M.Harris` chain, inline. |
+| **Member-of context** | Group memberships surfaced with what they *grant* (e.g. Remote Management Users → WinRM, Protected Users → hardened) — access no ACL edge represents |
+| **ADCS / ESC** | Load `certipy find -json` → **CertTemplate/CA nodes + ESC edges**, flagging exactly **which principal is vulnerable to which ESC** (and every group member inherits it). Plus a built-in **ESC1–ESC16 playbook** modal with chained `certipy` commands, parameterized to the active domain |
 | **Command snippets** | Per-edge **Linux *and* Windows** abuse commands, color-coded, with a copy button |
 | **Owned, your way** | Toggle owned in the UI **or** pre-seed it on import (used by ADAutoPwn) |
+| **Manage the DB** | Delete any imported graph straight from the domain list (cascades its nodes/edges) |
 
 ---
 
@@ -241,9 +245,9 @@ readability and fast inspection — and on pairing tightly with ADAutoPwn.
 **PolyForm Noncommercial 1.0.0** — see [`LICENSE`](LICENSE). Free to use, modify
 and share for **noncommercial** purposes (research, education, personal use,
 nonprofits). **Commercial use, selling or reselling is not permitted** — all
-commercial rights are reserved by the author (**c4sh3r**). Provided for
+commercial rights are reserved by the author (**c4sh$r**). Provided for
 **authorized security testing only**; the author assumes no liability for misuse.
 
 <div align="center">
-<sub>Made with ☕ by <b>c4sh3r</b> · companion to <a href="https://github.com/C4sh3R/ADAutoPwn">⚡ ADAutoPwn</a></sub>
+<sub>Made with ☕ by <b>c4sh$r</b> · companion to <a href="https://github.com/C4sh3R/ADAutoPwn">⚡ ADAutoPwn</a></sub>
 </div>

@@ -10,11 +10,25 @@
   <main id="welcome" class="welcome">
     <section class="welcome__hero">
       <div class="brand">
-        <div class="brand__mark">AG</div>
-        <div>
-          <h1>ADAutoGraph</h1>
-          <p>BloodHound-style AD graphing with ADAutoPwn abuse context.</p>
+        <div class="brand__mark" aria-label="ADAutoGraph">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M15 8 L8 21 M15 8 L24 18 M8 21 L24 18 M8 21 L15 25 M24 18 L15 25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity=".55"/>
+            <circle cx="15" cy="8" r="3.4" fill="currentColor"/>
+            <circle cx="8" cy="21" r="2.7" fill="currentColor"/>
+            <circle cx="24" cy="18" r="2.7" fill="currentColor"/>
+            <circle cx="15" cy="25" r="2.4" fill="currentColor"/>
+          </svg>
         </div>
+        <div>
+          <h1 class="brand__title">ADAutoGraph</h1>
+          <p>BloodHound-style AD graphing with <b>ADAutoPwn</b> abuse context — attack paths, ACLs &amp; ESC, with copy-paste commands.</p>
+        </div>
+      </div>
+      <div class="hero-features">
+        <div class="feat"><span class="feat__ic" style="color:var(--danger)">↯</span><div><b>Attack paths</b><small>owned → Domain Admins / DC, shortest route highlighted</small></div></div>
+        <div class="feat"><span class="feat__ic" style="color:var(--gold)">⚔</span><div><b>ACL &amp; delegation</b><small>rights inherited through groups &amp; OU control, expanded inline</small></div></div>
+        <div class="feat"><span class="feat__ic" style="color:var(--accent)">⚿</span><div><b>ADCS / ESC</b><small>certipy playbook + per-principal vulnerability flags</small></div></div>
+        <div class="feat"><span class="feat__ic" style="color:var(--accent2)">⧉</span><div><b>Copy-paste commands</b><small>every abuse ready for bloodyAD / certipy</small></div></div>
       </div>
       <form id="importForm" class="import">
         <label class="field">
@@ -30,6 +44,7 @@
         <button class="primary" type="submit">Import domain</button>
         <div id="importStatus" class="status"></div>
       </form>
+      <div class="credit">crafted by <a href="https://github.com/C4sh3R" target="_blank" rel="noopener">c4sh$r</a> · part of <b>ADAutoPwn</b></div>
     </section>
     <section class="domains">
       <div class="domains__head">
@@ -89,10 +104,31 @@
     <div class="quickbar glass">
       <button id="fitBtn" title="Fit graph">Fit</button>
       <button id="clearBtn" title="Clear canvas">Clear</button>
+      <button id="adcsBtn" title="ADCS / ESC certificate abuse playbook">⚿ ADCS</button>
       <span id="statusText">Ready</span>
     </div>
     <div id="hoverTip" class="hover-tip"></div>
     <div id="toast" class="toast"></div>
+    <div id="adcsModal" class="modal hidden">
+      <div class="modal__backdrop" data-close="adcs"></div>
+      <div class="modal__panel glass">
+        <header class="modal__head">
+          <div>
+            <div class="modal__title">⚿ ADCS — ESC certificate abuse</div>
+            <div class="modal__sub">certipy playbook, parameterised for <b id="adcsDomain">this domain</b>. Fill the <code>&lt;…&gt;</code> placeholders.</div>
+          </div>
+          <div class="modal__head-actions">
+            <label class="adcs-upload" title="Load 'certipy find -json' to flag which principals are vulnerable to which ESC">
+              <input id="adcsJson" type="file" accept=".json" hidden>
+              <span>⬆ Load certipy JSON</span>
+            </label>
+            <button class="modal__close" data-close="adcs">×</button>
+          </div>
+        </header>
+        <input id="adcsFilter" class="modal__filter" placeholder="Filter ESC (e.g. 'SAN', 'relay', 'esc8')...">
+        <div id="adcsBody" class="modal__body"></div>
+      </div>
+    </div>
   </section>
   <script src="/static/app.js"></script>
 </body>

