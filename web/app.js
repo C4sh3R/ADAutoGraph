@@ -160,6 +160,8 @@ async function openDomain(id) {
   view = "none";
   focusSid = "";
   relationMode = "abusable";
+  adcsFound = null;       // ESC scope is per-domain; drop it when switching
+  adcsShowAll = false;
   graph = { nodes: [], edges: [], drawEdges: [], totalNodes: active.node_count || 0, totalEdges: active.edge_count || 0 };
   nodeBySid = new Map();
   selected = -1;
@@ -190,11 +192,13 @@ async function loadStats() {
   }
 }
 
+let graphSeq = 0;
 async function loadGraph(query = "") {
   if (view === "none" && !query && !focusSid) {
     clearGraph();
     return;
   }
+  const seq = ++graphSeq;
   $("#graphMeta").textContent = "loading graph...";
   const params = new URLSearchParams({
     view,
@@ -204,6 +208,7 @@ async function loadGraph(query = "") {
     limit: "900",
   });
   const data = await api(`/api/domain/${active.id}/graph?${params}`);
+  if (seq !== graphSeq) return;  // a newer loadGraph() started; drop this stale response
   graph = data;
   nodeBySid = new Map(graph.nodes.map((n, i) => [n.id, i]));
   graph.drawEdges = buildDrawEdges(graph.edges);
@@ -1164,24 +1169,56 @@ const ADCS_PLAYBOOK = [
     ] },
 ];
 
+// After a `certipy find -json` import, adcsFound holds the ESCs the JSON flagged
+// (id → {templates,cas,principals} Sets). While set, the modal shows only those.
+let adcsFound = null;
+let adcsShowAll = false;  // toggle to peek at the full playbook without dropping the scope
+
+function escCtx(ctx) {
+  const parts = [];
+  const tpl = [...ctx.templates], cas = [...ctx.cas], prin = [...ctx.principals];
+  if (tpl.length) parts.push(`<span class="esc-ctx__k">template</span> ${tpl.map(esc).join(", ")}`);
+  if (cas.length) parts.push(`<span class="esc-ctx__k">CA</span> ${cas.map(esc).join(", ")}`);
+  if (prin.length) parts.push(`<span class="esc-ctx__k">vulnerable</span> ${prin.map(esc).join(", ")}`);
+  return `<div class="esc-ctx">${parts.join('<span class="esc-ctx__sep">·</span>') || "flagged in this environment"}</div>`;
+}
+
 function renderAdcs(filter = "") {
   const dom = (active && active.name) ? active.name : "domain.local";
   $("#adcsDomain").textContent = dom;
   const f = filter.toLowerCase();
-  const cards = ADCS_PLAYBOOK.filter((e) =>
+  const scoped = !!(adcsFound && adcsFound.size && !adcsShowAll);
+  const source = scoped
+    ? ADCS_PLAYBOOK.filter((e) => adcsFound.has(e.id.toUpperCase()))
+    : ADCS_PLAYBOOK;
+  const cards = source.filter((e) =>
     !f || (e.id + " " + e.name + " " + e.tag).toLowerCase().includes(f)
-  ).map((e) => `
-    <div class="esc">
+  ).map((e) => {
+    const ctx = adcsFound ? adcsFound.get(e.id.toUpperCase()) : null;
+    return `
+    <div class="esc${ctx ? " esc--found" : ""}">
       <div class="esc__head"><span class="esc__id">${esc(e.id)}</span><span class="esc__name">${esc(e.name)}</span><span class="esc__tag">${esc(e.tag)}</span></div>
+      ${ctx ? escCtx(ctx) : ""}
       ${e.cmds.map((c) => {
         const cmd = c.replace(/\{domain\}/g, dom);
         if (cmd.trim().startsWith("#")) return `<div class="esc__note">${esc(cmd)}</div>`;
         return `<div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · certipy</span><button class="copy" data-cmd="${esc(cmd)}">copy</button></div><pre>${colorCommand(cmd)}</pre></div>`;
       }).join("")}
-    </div>
-  `).join("");
-  $("#adcsBody").innerHTML = cards || `<div class="empty">No ESC matches "${esc(filter)}".</div>`;
+    </div>`;
+  }).join("");
+
+  let banner = "";
+  if (adcsFound && adcsFound.size) {
+    banner = scoped
+      ? `<div class="esc-scope">Showing only the <b>${adcsFound.size}</b> ESC found in this domain's certipy JSON<button class="esc-scope__btn" data-adcs-all>show full playbook</button></div>`
+      : `<div class="esc-scope">Full ESC1–ESC16 playbook<button class="esc-scope__btn" data-adcs-scope>show only the ${adcsFound.size} from JSON</button></div>`;
+  }
+  $("#adcsBody").innerHTML = banner + (cards || `<div class="empty">No ESC matches "${esc(filter)}".</div>`);
   $$("#adcsBody .copy").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+  const allBtn = $("#adcsBody [data-adcs-all]");
+  if (allBtn) allBtn.addEventListener("click", () => { adcsShowAll = true; renderAdcs($("#adcsFilter").value || ""); });
+  const scopeBtn = $("#adcsBody [data-adcs-scope]");
+  if (scopeBtn) scopeBtn.addEventListener("click", () => { adcsShowAll = false; renderAdcs($("#adcsFilter").value || ""); });
 }
 
 function openAdcs() {
@@ -1202,9 +1239,29 @@ $("#adcsJson").addEventListener("change", (ev) => {
   fd.append("json", file);
   api(`/api/domain/${active.id}/adcs`, { method: "POST", body: fd })
     .then((r) => {
-      toast(`ADCS: ${r.templates} vulnerable template(s) · ${r.edges} ESC edge(s) mapped`);
+      const finds = r.findings || [];
+      adcsShowAll = false;
+      if (!finds.length) {
+        adcsFound = null;
+        toast("certipy JSON parsed — no vulnerable ESC in it");
+      } else {
+        adcsFound = new Map();
+        for (const fx of finds) {
+          const id = (fx.esc || "").toUpperCase();
+          if (!id) continue;
+          let c = adcsFound.get(id);
+          if (!c) { c = { templates: new Set(), cas: new Set(), principals: new Set() }; adcsFound.set(id, c); }
+          if (fx.template) c.templates.add(fx.template);
+          if (fx.ca) c.cas.add(fx.ca);
+          (fx.principals || []).forEach((p) => p && c.principals.add(p));
+        }
+        toast(`ADCS: ${adcsFound.size} ESC found · ${r.templates} template(s) · ${r.edges} edge(s)`);
+      }
       loadStats();
       if (view !== "none" || focusSid) loadGraph($("#searchInput").value || "");
+      $("#adcsFilter").value = "";
+      renderAdcs("");
+      $("#adcsModal").classList.remove("hidden");
     })
     .catch((e) => toast(`certipy import failed: ${e.message}`));
 });
@@ -1239,7 +1296,7 @@ $("#searchInput").addEventListener("input", () => {
   searchTimer = setTimeout(runSearch, 160);
 });
 $("#searchInput").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") loadGraph($("#searchInput").value.trim());
+  if (ev.key === "Enter") { focusSid = ""; loadGraph($("#searchInput").value.trim()); }
   if (ev.key === "Escape") {
     $("#searchInput").value = "";
     $("#searchResults").classList.remove("show");
@@ -1263,6 +1320,8 @@ async function runSearch() {
   $$(".result").forEach((el) => el.addEventListener("mousedown", async (ev) => {
     ev.preventDefault();
     const sid = el.dataset.sid;
+    focusSid = "";              // a fresh search is a new context, not the old focus
+    box.classList.remove("show");
     await loadGraph(sid);
     const idx = nodeBySid.get(sid);
     if (idx != null) {

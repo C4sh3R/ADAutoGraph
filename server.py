@@ -1036,11 +1036,15 @@ def import_certipy(con, domain_id, data):
             (domain_id, sid, label, ntype, 1 if high else 0, json.dumps(props)),
         )
 
+    findings = []  # everything the JSON flags, so the UI can show only these ESCs
     n_nodes = n_edges = n_tpls = 0
     for ca in cas.values():
         can = ca.get("CA Name") or "CA"
         upsert_node("ADCS-CA-%s" % can, can, "EnterpriseCA", True, {"dnsName": ca.get("DNS Name"), "subject": ca.get("Certificate Subject")})
         n_nodes += 1
+        # CA-level ESCs (ESC6/7/8/11/16…) hang off the CA entry, not a template
+        for esc, desc in (ca.get("[!] Vulnerabilities") or {}).items():
+            findings.append({"esc": esc.upper(), "template": None, "ca": can, "principals": [], "desc": desc})
     for t in tpls.values():
         vulns = t.get("[!] Vulnerabilities") or {}
         if not vulns:
@@ -1055,7 +1059,9 @@ def import_certipy(con, domain_id, data):
         perms = t.get("Permissions", {}) or {}
         ep = perms.get("Enrollment Permissions", {}) or {}
         principals |= set(ep.get("Enrollment Rights", []) or [])
+        pretty = sorted({(pr or "").split("\\")[-1] for pr in principals if pr})
         for esc, desc in vulns.items():
+            findings.append({"esc": esc.upper(), "template": tname, "ca": ca_name, "principals": pretty, "desc": desc})
             props = json.dumps({"esc": esc, "desc": desc, "cmds": esc_commands(esc, ca_name, tname, dom)})
             for pr in principals:
                 pname = (pr or "").split("\\")[-1].upper()
@@ -1070,11 +1076,11 @@ def import_certipy(con, domain_id, data):
                 n_edges += 1
     con.execute("UPDATE domains SET node_count=(SELECT COUNT(*) FROM nodes WHERE domain_id=?), edge_count=(SELECT COUNT(*) FROM edges WHERE domain_id=?) WHERE id=?", (domain_id, domain_id, domain_id))
     con.commit()
-    return {"templates": n_tpls, "nodes": n_nodes, "edges": n_edges}
+    return {"templates": n_tpls, "nodes": n_nodes, "edges": n_edges, "findings": findings}
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "ADAutoGraph/0.1"
+    server_version = "ADAutoGraph/0.2"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))

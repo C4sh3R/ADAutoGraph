@@ -815,6 +815,28 @@ button { color: inherit; }
 .esc__tag { margin-left: auto; font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; }
 .esc__note { color: var(--muted); font-size: 12px; margin: 6px 0; padding-left: 4px; border-left: 2px solid rgba(255,255,255,.12); }
 
+/* ESCs surfaced from an imported certipy JSON */
+.esc--found { background: rgba(88,230,180,.045); box-shadow: inset 3px 0 0 var(--accent); padding-left: 12px; }
+.esc-ctx {
+  font-size: 11.5px; color: var(--ink); margin: 0 0 9px; padding: 6px 9px;
+  background: rgba(88,230,180,.10); border: 1px solid rgba(88,230,180,.22); border-radius: 8px;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+}
+.esc-ctx__k { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent); font-weight: 900; margin-right: 2px; }
+.esc-ctx__sep { color: var(--muted); opacity: .6; }
+.esc-scope {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--muted); margin: 4px 0 10px; padding: 8px 10px;
+  background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: 10px;
+}
+.esc-scope b { color: var(--accent); }
+.esc-scope__btn {
+  margin-left: auto; cursor: pointer; font-size: 11px; font-weight: 700;
+  color: var(--accent2); background: transparent; border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 10px; transition: background .14s ease, border-color .14s ease;
+}
+.esc-scope__btn:hover { background: rgba(105,168,255,.10); border-color: rgba(105,168,255,.45); }
+
 /* --- polish pass: rounded, modern controls ------------------------------- */
 .view { border-radius: 10px; transition: background .14s ease, border-color .14s ease, transform .1s ease; }
 .view:hover { background: rgba(255,255,255,.07); transform: translateX(1px); }
