@@ -5,10 +5,17 @@
 #
 # Used from the Python standard library:
 #   argparse
-#   cgi
 #   json
 #   os
 #   pathlib
 #   sqlite3
 #   zipfile
 #   http.server
+
+#   re
+#   typing
+#   io
+#   math
+#   functools
+#   wsgiref
+#   collections
