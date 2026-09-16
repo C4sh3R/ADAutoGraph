@@ -106,11 +106,7 @@ cd ADAutoGraph
 chmod +x server.py
 ```
 
-No `pip install`, no Node, no Docker — it only uses the Python **standard library**
-(`3.10` to `<3.13`). That's it.
-
-> ⚠️ **Compatibility note:** Python `3.13+` is currently not supported because
-> `server.py` uses `cgi`, which was removed from the standard library.
+No `pip install`, no Node, no Docker — it only uses the Python **standard library** That's it.
 
 ### Run it from anywhere
 
