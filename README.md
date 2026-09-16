@@ -20,7 +20,7 @@ no Node, no Docker, **pure Python standard library**.
 
 <sub>Crafted & weaponized by **c4sh$r** · authorized engagements only · companion to [⚡ ADAutoPwn](https://github.com/C4sh3R/ADAutoPwn)</sub>
 
-![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![python](https://img.shields.io/badge/python-3.10--3.12-3776AB?style=flat-square&logo=python&logoColor=white)
 ![stdlib](https://img.shields.io/badge/deps-zero%20(stdlib)-2ea44f?style=flat-square&logo=python&logoColor=white)
 ![sqlite](https://img.shields.io/badge/storage-SQLite-044a64?style=flat-square&logo=sqlite&logoColor=white)
 ![offline](https://img.shields.io/badge/offline-local%20web%20app-blueviolet?style=flat-square)
@@ -107,7 +107,10 @@ chmod +x server.py
 ```
 
 No `pip install`, no Node, no Docker — it only uses the Python **standard library**
-(`3.10+`). That's it.
+(`3.10` to `<3.13`). That's it.
+
+> ⚠️ **Compatibility note:** Python `3.13+` is currently not supported because
+> `server.py` uses `cgi`, which was removed from the standard library.
 
 ### Run it from anywhere
 
