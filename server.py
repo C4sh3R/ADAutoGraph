@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import cgi
 import json
 import os
 import posixpath
@@ -10,8 +9,9 @@ import sys
 import time
 import urllib.parse
 import zipfile
+from lib import multipart
 from collections import defaultdict, deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -1155,17 +1155,16 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         try:
             if path == "/api/import":
-                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-                # NB: use `is None`, never `not fileitem` — cgi.FieldStorage.__bool__
-                # raises TypeError("Cannot be converted to bool.") for a single file
-                # field (its .list is None), which would 500 every upload.
-                fileitem = form["zip"] if "zip" in form else None
+                form = multipart_form(self)
+                fileitem = form.get("zip")
                 if fileitem is None or not getattr(fileitem, "file", None):
                     return self.send_json({"error": "missing zip"}, 400)
-                name = form.getfirst("name") or None
+                name_part = form.get("name")
+                name = name_part.value if name_part else None
                 # Optional: a list of already-compromised principals to pre-mark as
                 # owned (names/SIDs, separated by newlines, commas or spaces).
-                owned_raw = form.getfirst("owned") or ""
+                owned_part = form.get("owned")
+                owned_raw = owned_part.value if owned_part else ""
                 owned = [p for p in re.split(r"[\s,]+", owned_raw) if p]
                 tmp = DATA / ("upload_%d.zip" % int(time.time() * 1000))
                 with tmp.open("wb") as out:
@@ -1179,8 +1178,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": True, "domainId": domain_id})
             if path.startswith("/api/domain/") and path.endswith("/adcs"):
                 domain_id = int(path.split("/")[3])
-                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-                fileitem = form["json"] if "json" in form else None
+                form = multipart_form(self)
+                fileitem = form.get("json")
                 if fileitem is None or not getattr(fileitem, "file", None):
                     return self.send_json({"error": "missing certipy json (field 'json')"}, 400)
                 try:
@@ -1208,6 +1207,8 @@ class Handler(BaseHTTPRequestHandler):
                     con.execute("UPDATE nodes SET owned=? WHERE domain_id=? AND sid=?", (owned, domain_id, sid))
                 con.close()
                 return self.send_json({"ok": True, "owned": bool(owned)})
+        except (ValueError, multipart.MultipartError) as exc:
+            return self.send_json({"error": str(exc)}, 400)
         except Exception as exc:
             return self.send_json({"error": str(exc)}, 500)
         self.send_error(404)
@@ -1232,6 +1233,33 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": str(exc)}, 500)
         self.send_error(404)
 
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024  # 256 MiB
+def multipart_form(
+    handler: BaseHTTPRequestHandler,
+) -> multipart.MultipartParser:
+    content_type = handler.headers.get("Content-Type", "")
+    kind, options = multipart.parse_options_header(content_type)
+    boundary = options.get("boundary")
+
+    if kind != "multipart/form-data" or not boundary:
+        raise ValueError("expected multipart/form-data")
+
+    try:
+        content_lenght = int(handler.headers["Content-Length"])
+    except (KeyError, ValueError) as err:
+        raise ValueError("missing or invalid Content-Length") from err
+    if content_lenght < 0 or content_lenght > MAX_UPLOAD_BYTES:
+        raise ValueError("upload too large")
+
+    return multipart.MultipartParser(
+        stream=handler.rfile,
+        boundary=boundary,
+        content_length=content_lenght,
+        strict=True,
+        part_limit=8,
+        partsize_limit=MAX_UPLOAD_BYTES,
+        disk_limit=MAX_UPLOAD_BYTES,
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="ADAutoGraph local BloodHound-style web UI")
