@@ -1,21 +1,23 @@
-# ADAutoGraph currently has no third-party Python dependencies.
+# ADAutoGraph has no pip dependencies — nothing to install.
 #
 # Runtime:
-#   Python 3.10+
+#   Python 3.10+  (3.13 supported: the removed `cgi` module is no longer used)
+#
+# Vendored (shipped in-tree, MIT — see THIRD_PARTY_NOTICES.md):
+#   lib/multipart.py    defnull/multipart v1.3.1 — multipart/form-data parsing
 #
 # Used from the Python standard library:
 #   argparse
+#   collections
+#   functools
+#   http.server
+#   io
 #   json
+#   math
 #   os
 #   pathlib
-#   sqlite3
-#   zipfile
-#   http.server
-
 #   re
+#   sqlite3
 #   typing
-#   io
-#   math
-#   functools
 #   wsgiref
-#   collections
+#   zipfile

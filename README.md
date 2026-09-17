@@ -16,12 +16,13 @@
 
 Import a BloodHound collector ZIP, explore AD relationships through a clean, fast,
 operator-focused web UI, and walk the abuse paths to Domain Admin — all offline,
-no Node, no Docker, **pure Python standard library**.
+no Node, no Docker, **no `pip install`** — the Python standard library plus a
+single vendored MIT file (`lib/multipart.py`).
 
 <sub>Crafted & weaponized by **c4sh$r** · authorized engagements only · companion to [⚡ ADAutoPwn](https://github.com/C4sh3R/ADAutoPwn)</sub>
 
-![python](https://img.shields.io/badge/python-3.10--3.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![stdlib](https://img.shields.io/badge/deps-zero%20(stdlib)-2ea44f?style=flat-square&logo=python&logoColor=white)
+![python](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![stdlib](https://img.shields.io/badge/pip%20deps-zero-2ea44f?style=flat-square&logo=python&logoColor=white)
 ![sqlite](https://img.shields.io/badge/storage-SQLite-044a64?style=flat-square&logo=sqlite&logoColor=white)
 ![offline](https://img.shields.io/badge/offline-local%20web%20app-blueviolet?style=flat-square)
 ![license](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange?style=flat-square)
@@ -106,7 +107,11 @@ cd ADAutoGraph
 chmod +x server.py
 ```
 
-No `pip install`, no Node, no Docker — it only uses the Python **standard library** That's it.
+No `pip install`, no Node, no Docker. It runs on the Python **standard library**
+plus one vendored MIT dependency shipped inside the repo
+(`lib/multipart.py`, from [defnull/multipart](https://github.com/defnull/multipart) —
+see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)), which replaces the `cgi`
+module removed in **Python 3.13**. Works on **Python 3.10 → 3.13+**.
 
 ### Run it from anywhere
 
@@ -176,6 +181,10 @@ curl -F "zip=@bloodhound.zip" -F "name=corp.local" \
 ```text
 ADAutoGraph/
 ├── server.py            # the whole backend (stdlib http.server + sqlite3)
+├── lib/
+│   └── multipart.py     # vendored MIT multipart parser (replaces stdlib `cgi`, gone in 3.13)
+├── tests/
+│   └── test_multipart_form.py
 ├── web/
 │   ├── index.html
 │   ├── style.css
@@ -184,6 +193,7 @@ ADAutoGraph/
 │   └── graph.db         # imported data — local only, git-ignored (delete to reset)
 ├── assets/screenshot.png
 ├── requirements.txt
+├── THIRD_PARTY_NOTICES.md
 ├── LICENSE
 └── README.md
 ```
@@ -213,8 +223,9 @@ PRs and issues are very welcome — the AD graph space has endless room to grow.
 ```bash
 git clone https://github.com/<you>/ADAutoGraph.git && cd ADAutoGraph
 git checkout -b feature/my-idea
-# hack on server.py (backend) or web/app.js (renderer) — keep it stdlib-only
+# hack on server.py (backend) or web/app.js (renderer) — keep it pip-dependency-free
 python3 -c "import ast; ast.parse(open('server.py').read())"   # must stay clean
+python3 -m unittest discover -s tests                          # tests must pass
 git commit -am "feat: my idea" && git push origin feature/my-idea
 ```
 
