@@ -104,6 +104,10 @@ function short(s, n = 28) {
 
 function loadDomains() {
   return api("/api/domains").then((data) => {
+    if (data.version) {
+      const el = $("#appVersion");
+      if (el) { el.textContent = `v${data.version}`; el.title = `ADAutoGraph ${data.version} — quote this in a bug report`; }
+    }
     domains = data.domains || [];
     renderDomains();
   });

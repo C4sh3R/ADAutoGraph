@@ -1462,3 +1462,20 @@ button { color: inherit; }
 }
 .creds__row input:focus { outline: none; border-color: var(--accent); }
 @media (max-width: 720px) { .target__grid { grid-template-columns: 1fr; } }
+
+/* --- version, so a bug report can name one ------------------------------- */
+.brand__ver {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 3px 9px;
+  border: 1px solid rgba(88, 230, 180, .3);
+  border-radius: 999px;
+  background: rgba(88, 230, 180, .1);
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .3px;
+}
+.brand__ver:empty { display: none; }

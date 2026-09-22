@@ -1843,7 +1843,9 @@ class Handler(BaseHTTPRequestHandler):
                 con = db()
                 rows = con.execute("SELECT * FROM domains ORDER BY created_at DESC").fetchall()
                 con.close()
-                return self.send_json({"domains": [dict(r) for r in rows]})
+                # The UI has no other way to know what it is talking to, and an
+                # issue report is worth a lot more with a version attached.
+                return self.send_json({"domains": [dict(r) for r in rows], "version": __version__})
             if path.startswith("/api/domain/") and path.endswith("/graph"):
                 domain_id = int(path.split("/")[3])
                 view = qs.get("view", ["overview"])[0]
