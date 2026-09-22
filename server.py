@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"

@@ -109,19 +109,6 @@
     </div>
     <div id="hoverTip" class="hover-tip"></div>
     <div id="toast" class="toast"></div>
-    <div id="confirmModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
-      <div class="modal__backdrop" data-close="confirm"></div>
-      <div class="confirm glass">
-        <div class="confirm__icon" aria-hidden="true">⚠</div>
-        <h3 id="confirmTitle" class="confirm__title">Delete this graph?</h3>
-        <p id="confirmText" class="confirm__text"></p>
-        <div id="confirmDetail" class="confirm__detail"></div>
-        <div class="confirm__actions">
-          <button id="confirmCancel" class="confirm__btn">Cancel</button>
-          <button id="confirmOk" class="confirm__btn danger">Delete</button>
-        </div>
-      </div>
-    </div>
     <div id="adcsModal" class="modal hidden">
       <div class="modal__backdrop" data-close="adcs"></div>
       <div class="modal__panel glass">
@@ -143,6 +130,19 @@
       </div>
     </div>
   </section>
+  <div id="confirmModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal__backdrop" data-close="confirm"></div>
+    <div class="confirm glass">
+      <div class="confirm__icon" aria-hidden="true">⚠</div>
+      <h3 id="confirmTitle" class="confirm__title">Delete this graph?</h3>
+      <p id="confirmText" class="confirm__text"></p>
+      <div id="confirmDetail" class="confirm__detail"></div>
+      <div class="confirm__actions">
+        <button id="confirmCancel" class="confirm__btn">Cancel</button>
+        <button id="confirmOk" class="confirm__btn danger">Delete</button>
+      </div>
+    </div>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>
