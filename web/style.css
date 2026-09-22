@@ -1366,3 +1366,12 @@ button { color: inherit; }
   font-size: 11px;
   font-style: italic;
 }
+
+/* --- who the delegation lets you become --------------------------------- */
+.dg-row.yes { background: rgba(88, 230, 180, .08); }
+.dg-row.yes:hover { background: rgba(88, 230, 180, .16); }
+.dg-svc.yes { background: rgba(88, 230, 180, .22); color: var(--accent); }
+.dg-row.no { background: rgba(255, 84, 116, .08); }
+.dg-row.no:hover { background: rgba(255, 84, 116, .15); }
+.dg-row.no b { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255, 84, 116, .6); }
+.dg-svc.no { background: rgba(255, 84, 116, .2); color: var(--danger); }

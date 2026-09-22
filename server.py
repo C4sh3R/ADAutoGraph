@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -1043,9 +1043,23 @@ def delegation_context(con, domain_id):
     own an SPN), and whether the built-in Administrator is NOT_DELEGATED
     (`sensitive`) — which decides who you are allowed to impersonate at all."""
     candidates = []
+    privileged = []      # worth impersonating
+    computers = {}       # label -> node, to resolve a target host to its machine account
     admin_sensitive = False
+    # Protected Users cannot be delegated either, whatever their own flags say.
+    protected = {
+        r["source_sid"] for r in con.execute(
+            """
+            SELECT e.source_sid FROM edges e JOIN nodes n
+              ON n.domain_id=e.domain_id AND n.sid=e.target_sid
+            WHERE e.domain_id=? AND e.right_name='MemberOf'
+              AND upper(n.label) LIKE 'PROTECTED USERS%'
+            """,
+            (domain_id,),
+        )
+    }
     for row in con.execute(
-        "SELECT sid,label,type,owned,props FROM nodes WHERE domain_id=?", (domain_id,)
+        "SELECT sid,label,type,owned,high_value,props FROM nodes WHERE domain_id=?", (domain_id,)
     ):
         try:
             props = json.loads(row["props"] or "{}")
@@ -1053,6 +1067,22 @@ def delegation_context(con, domain_id):
             continue
         if row["sid"].endswith("-500"):
             admin_sensitive = bool(props.get("sensitive"))
+        if row["type"] == "Computer":
+            computers[(row["label"] or "").lower()] = {
+                "sid": row["sid"], "label": row["label"], "type": "Computer", "props": props,
+            }
+        # An account is worth impersonating if it is privileged; it is delegable
+        # unless it is marked sensitive (NOT_DELEGATED) or sits in Protected Users.
+        if row["type"] == "User" and (props.get("admincount") or row["high_value"] or row["sid"].endswith("-500")):
+            if props.get("enabled") is False or row["sid"].endswith(("-501", "-502")):
+                continue
+            blocked = "sensitive (NOT_DELEGATED)" if props.get("sensitive") else (
+                "member of Protected Users" if row["sid"] in protected else "")
+            privileged.append({
+                "sid": row["sid"],
+                "name": props.get("samaccountname") or short_name(row["label"]),
+                "label": row["label"], "type": "User", "blocked": blocked,
+            })
         spns = [x for x in (props.get("serviceprincipalnames") or []) if x]
         if not spns or row["type"] not in ("User", "Computer"):
             continue
@@ -1071,7 +1101,46 @@ def delegation_context(con, domain_id):
     # Prefer something you already own, then a user account (no machine password to
     # source), then alphabetical so the suggestion is stable across reloads.
     candidates.sort(key=lambda c: (0 if c["owned"] else 1, 0 if c["type"] == "User" else 1, c["name"].lower()))
-    return {"spnPrincipals": candidates, "adminSensitive": admin_sensitive}
+    privileged.sort(key=lambda c: (0 if c["sid"].endswith("-500") else 1, c["name"].lower()))
+    return {
+        "spnPrincipals": candidates,
+        "adminSensitive": admin_sensitive,
+        "privileged": privileged,
+        "computers": computers,
+        "protected": protected,
+    }
+
+
+def impersonation_options(ctx, targets):
+    """Who this delegation lets you become, as real graph objects.
+
+    Two groups, and the second matters as much as the first: a privileged account
+    flagged `sensitive` or sitting in Protected Users is one the KDC refuses to
+    delegate, and not saying so is how you end up debugging KDC_ERR_BADOPTION."""
+    ctx = ctx or {}
+    can, blocked, seen = [], [], set()
+    # The machine account of each host you can delegate to is always delegable, and
+    # on a DC it carries the replication rights — that is the DCSync route.
+    for t in targets or []:
+        node = (ctx.get("computers") or {}).get((t.get("targetLabel") or "").lower())
+        if not node or node["sid"] in seen:
+            continue
+        seen.add(node["sid"])
+        why = "the target host's own account"
+        if is_dc_node(node["label"], node["props"]):
+            why += " — holds the DC replication rights, so this reaches DCSync"
+        can.append({"sid": node["sid"], "label": node["label"], "type": "Computer",
+                    "name": (node["props"].get("samaccountname") or short_name(node["label"])), "why": why})
+    for pr in ctx.get("privileged") or []:
+        if pr["sid"] in seen:
+            continue
+        seen.add(pr["sid"])
+        entry = {"sid": pr["sid"], "label": pr["label"], "type": "User", "name": pr["name"]}
+        if pr["blocked"]:
+            blocked.append({**entry, "why": pr["blocked"]})
+        else:
+            can.append({**entry, "why": "privileged and delegable"})
+    return can[:12], blocked[:12]
 
 
 def pick_helper(ctx, exclude_sid):
@@ -1263,7 +1332,10 @@ def delegation_summary(sid, label, props, outgoing, incoming, domain, ctx):
                              "target": e["target_sid"], "targetLabel": e["target_label"],
                              "targetType": e["target_type"]})
     helper = pick_helper(ctx, sid)
+    can_imp, blocked_imp = impersonation_options(ctx, resolved)
     return {
+        "canImpersonate": can_imp,
+        "blockedImpersonate": blocked_imp,
         "kind": kind,
         "note": note,
         "protocolTransition": proto,

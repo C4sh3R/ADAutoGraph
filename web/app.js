@@ -943,6 +943,14 @@ function renderDelegation(d) {
       <span class="dg-arrow">can impersonate anyone here</span>
     </div>`).join("");
   const own = (d.ownSpns || []).map((x) => `<code>${esc(x)}</code>`).join(" ");
+  // Who you get to BECOME. This is the half BloodHound leaves you to work out, and
+  // the blocked list is the one that saves the debugging session.
+  const imp = (list, cls) => list.map((a) => `
+    <div class="dg-row ${cls}" data-goto="${esc(a.sid)}">
+      <span class="dg-svc ${cls}">${esc(a.type === "Computer" ? "machine" : "user")}</span>
+      <b>${esc(a.name)}</b>
+      <span class="dg-arrow">${esc(a.why)}</span>
+    </div>`).join("");
   return `
     <div class="section-title">⇄ Kerberos delegation</div>
     <div class="delegation ${tone}">
@@ -950,6 +958,12 @@ function renderDelegation(d) {
       <p class="dg-note">${esc(d.note)}</p>
       ${targets ? `<div class="dg-label">Can delegate to</div>${targets}` : ""}
       ${actors ? `<div class="dg-label">Can act on its behalf</div>${actors}` : ""}
+      ${(d.canImpersonate || []).length
+        ? `<div class="dg-label">Can impersonate <em>— who you become at the far end</em></div>${imp(d.canImpersonate, "yes")}`
+        : ""}
+      ${(d.blockedImpersonate || []).length
+        ? `<div class="dg-label">Refused by the KDC <em>— privileged, but not delegable</em></div>${imp(d.blockedImpersonate, "no")}`
+        : ""}
       ${own ? `<div class="dg-label">Its own SPNs <em>— the evidence ticket is minted against one of these</em></div><div class="dg-spns">${own}</div>` : ""}
       ${d.helper && !d.protocolTransition && !d.unconstrained
         ? `<div class="dg-hint"><b>Bridge account:</b> <span data-goto="${esc(d.helper.sid)}">${esc(d.helper.name)}</span> — holds an SPN (<code>${esc(d.helper.spn)}</code>), which is what RBCD requires of the principal you delegate from.${d.helper.owned ? " Already marked owned." : ""}</div>`
