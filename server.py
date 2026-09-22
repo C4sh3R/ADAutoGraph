@@ -6,6 +6,7 @@ import posixpath
 import re
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
 import zipfile
@@ -14,7 +15,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -218,12 +219,33 @@ def path_traversable(edge):
     return bool(edge["abusable"]) or right in {"memberof", "contains"}
 
 
+# The schema and the abusable-flag backfill are per-DATABASE work, not per-request.
+# Doing them on every connection meant a full-table UPDATE on `edges` for every
+# single HTTP hit — which, with ThreadingHTTPServer, is several writers racing for
+# the write lock on every page load ("database is locked") and a write-ahead log
+# that grows without bound.
+_schema_lock = threading.Lock()
+_schema_ready = False
+
+
 def db():
+    global _schema_ready
     DATA.mkdir(exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    # Wait for a busy writer instead of failing the request outright.
+    con.execute("PRAGMA busy_timeout=30000")
     con.execute("PRAGMA foreign_keys=ON")
+    with _schema_lock:
+        if _schema_ready:
+            return con
+        _prepare_schema(con)
+        _schema_ready = True
+    return con
+
+
+def _prepare_schema(con):
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS domains (
@@ -262,11 +284,17 @@ def db():
         CREATE INDEX IF NOT EXISTS idx_edges_domain_dst ON edges(domain_id, target_sid);
         """
     )
+    # Backfill for graphs imported before a right joined ABUSABLE. `abusable=0`
+    # keeps it a no-op once it has run, so it costs nothing on an up-to-date DB.
     known = tuple(ABUSABLE)
     if known:
         placeholders = ",".join("?" for _ in known)
-        con.execute(f"UPDATE edges SET abusable=1 WHERE lower(replace(right_name, ' ', '')) IN ({placeholders})", known)
-    return con
+        con.execute(
+            f"UPDATE edges SET abusable=1 "
+            f"WHERE abusable=0 AND lower(replace(right_name, ' ', '')) IN ({placeholders})",
+            known,
+        )
+        con.commit()
 
 
 def load_zip(path):
@@ -1293,17 +1321,17 @@ def gain_commands(chain, actor, actor_dn, domain, ou_dn=None):
     return steps
 
 
-def with_prelude(prelude, commands):
-    """Number the prelude and the abuse as one ordered recipe."""
-    out = [{"os": "linux", "tool": "{} · {}".format(i, label), "cmd": cmd}
-           for i, (label, cmd) in enumerate(prelude, start=1)]
-    base = len(out)
-    for j, c in enumerate(commands or [], start=1):
-        item = dict(c)
-        if base:
-            item["tool"] = "{} · {}".format(base + j, c.get("tool", ""))
-        out.append(item)
-    return out
+def prelude_cmds(prelude):
+    """The shared setup as plain command entries. Numbering is left to the caller:
+    the same prelude serves every target reached through the same trail, so it is
+    rendered once and the per-target steps continue from where it ends."""
+    return [{"os": "linux", "tool": label, "cmd": cmd} for label, cmd in prelude]
+
+
+def prelude_key(chain, ou_dn=""):
+    """Identifies a setup. Two targets reached through the same groups and the same
+    OU share one setup and must not repeat it."""
+    return "|".join("{}:{}".format(key(h.get("via")), h.get("groupSid", "")) for h in chain) + "||" + (ou_dn or "")
 
 
 def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
@@ -1380,10 +1408,9 @@ def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
                 result.append({
                     "target": e["target_sid"], "targetLabel": e["target_label"], "targetType": e["ttype"],
                     "right": e["right_name"], "via": chain,
-                    "abuse": with_prelude(
-                        gain_commands(chain, actor, actor_dn, domain_name),
-                        edge_abuse(e, actor, domain_name, src_dn=actor_dn),
-                    ),
+                    "prelude": prelude_cmds(gain_commands(chain, actor, actor_dn, domain_name)),
+                    "preludeKey": prelude_key(chain),
+                    "abuse": edge_abuse(e, actor, domain_name, src_dn=actor_dn),
                     **_edge_esc(e),
                 })
         elif ttype in CONTAINER_TYPES:
@@ -1401,12 +1428,18 @@ def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
                     "target": child_sid, "targetLabel": child_label, "targetType": child_type,
                     "right": "GenericAll", "via": chain,
                     "note": "Objects with adminCount=1 do NOT inherit ACEs from their parent OU.",
-                    "abuse": with_prelude(
-                        prelude,
-                        abuse_for("GenericAll", actor, name_of.get(child_sid) or child_label, domain_name,
-                                  src_dn=actor_dn, dst_dn=dn_of.get(child_sid, "")),
-                    ),
+                    "prelude": prelude_cmds(prelude),
+                    "preludeKey": prelude_key(chain, ou_dn),
+                    "abuse": abuse_for("GenericAll", actor, name_of.get(child_sid) or child_label, domain_name,
+                                       src_dn=actor_dn, dst_dn=dn_of.get(child_sid, "")),
                 })
+    # Drop the OU-as-a-target card when that same OU is already the setup of the
+    # objects inside it: its commands would be a verbatim copy of that setup.
+    setup_ous = {r["preludeKey"].split("||", 1)[1] for r in result if r["preludeKey"].split("||", 1)[1]}
+    result = [
+        r for r in result
+        if not (r["targetType"] in CONTAINER_TYPES and dn_of.get(r["target"], "") in setup_ous)
+    ]
     result.sort(key=lambda r: (RIGHT_RANK.get(key(r["right"]), 80), r["targetLabel"] or ""))
     return result
 

@@ -1022,8 +1022,12 @@ function renderPanel(n) {
       ${abuseOut.slice(0, 30).map((e, i) => renderRecipe(e, { forceOpen: i === 0 && !openRecipes.size })).join("")
         || `<div class="empty">Nothing this object can abuse on its own.</div>`}
       ${gd.length ? `<div class="section-title">Through groups &amp; OU control <span class="count">${gd.length}</span></div>
-        <p class="section-hint">Rights this object does not hold directly. Each recipe starts with the steps that make the right yours.</p>
-        ${gd.slice(0, 30).map((e) => renderRecipe(e, { via: e.via, viaTag: "gd" })).join("")}` : ""}
+        <p class="section-hint">Rights this object does not hold directly. Run the setup once, then take any object below.</p>
+        ${groupByPrelude(gd.slice(0, 30)).map((g, i) => `
+          <div class="gd-group">
+            ${renderSetup(g, i)}
+            ${g.items.map((e) => renderRecipe(e, { via: e.via, viaTag: `gd${i}`, grouped: true })).join("")}
+          </div>`).join("")}` : ""}
     </section>
     <section class="tabpage" data-page="raw">
       <div class="section-title">All imported properties</div>
@@ -1079,12 +1083,54 @@ function renderRecipe(e, opts = {}) {
         <span class="recipe__right">${esc(e.right)}</span>${escBadge(e)}
         <span class="recipe__arrow">→</span>
         <span class="recipe__target">${esc(short(e.targetLabel, 30))}</span>
-        <span class="recipe__meta">${esc(e.targetType || "")}${steps ? ` · ${steps} steps` : ` · ${cmds.length} cmd`}</span>
+        <span class="recipe__meta">${esc(e.targetType || "")}${steps ? ` · ${steps} steps` : ` · ${cmds.length} ways`}</span>
       </button>
-      ${opts.via ? renderViaTrail(opts.via) : ""}
+      ${opts.via && !opts.grouped ? renderViaTrail(opts.via) : ""}
       ${e.note ? `<div class="recipe__note">${esc(e.note)}</div>` : ""}
       <div class="recipe__body">
-        ${steps > 1 ? `<button class="copy-all" data-cmd="${esc(all)}">⧉ copy all ${cmds.length} commands</button>` : ""}
+        ${steps > 1 ? `<button class="copy-all" data-cmd="${esc(all)}">⧉ copy all ${cmds.length} steps</button>` : ""}
+        ${!steps && cmds.length > 1 ? `<div class="recipe__pick">Same outcome, different tools — pick one.</div>` : ""}
+        ${cmds.map(renderCmd).join("")}
+      </div>
+    </div>`;
+}
+
+// Steps vs alternatives. The setup is a sequence you run in order, so it is
+// numbered. The per-target commands are different tools doing the SAME thing —
+// numbering those would read as "run all ten", which is wrong.
+function numberCmds(cmds, start = 1) {
+  return cmds.map((a, i) => ({ ...a, tool: `${start + i} · ${a.tool}` }));
+}
+
+// Every target reached through the same groups and the same OU shares one setup.
+// Repeating it under each target is what made this section a wall of duplicates.
+function groupByPrelude(entries) {
+  const groups = new Map();
+  for (const e of entries) {
+    const k = e.preludeKey || "";
+    if (!groups.has(k)) groups.set(k, { prelude: e.prelude || [], via: e.via, items: [] });
+    groups.get(k).items.push(e);
+  }
+  return [...groups.values()];
+}
+
+function renderSetup(group, idx) {
+  const cmds = numberCmds((group.prelude || []).filter((a) => cmdOs === "all" || a.os === cmdOs));
+  if (!cmds.length) return "";
+  const key = `setup-${idx}`;
+  const open = openRecipes.has(key) || !openRecipes.size;
+  const all = cmds.map((a) => a.cmd).join("\n");
+  return `
+    <div class="recipe setup${open ? " open" : ""}" data-recipe="${esc(key)}" style="--sev:${SEVERITY.high}">
+      <button class="recipe__head" data-toggle="${esc(key)}" aria-expanded="${open}">
+        <span class="recipe__chev" aria-hidden="true">▸</span>
+        <span class="recipe__right">SETUP</span>
+        <span class="recipe__target">run once — unlocks ${group.items.length} object${group.items.length === 1 ? "" : "s"}</span>
+        <span class="recipe__meta">${cmds.length} steps</span>
+      </button>
+      ${group.via ? renderViaTrail(group.via) : ""}
+      <div class="recipe__body">
+        <button class="copy-all" data-cmd="${esc(all)}">⧉ copy all ${cmds.length} steps</button>
         ${cmds.map(renderCmd).join("")}
       </div>
     </div>`;
