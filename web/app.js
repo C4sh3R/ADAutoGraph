@@ -311,12 +311,14 @@ function buildDrawEdges(edges) {
         targetSid: e.targetSid,
         rights: [],
         abusable: false,
+        planned: false,
         count: 0,
       };
       groups.set(k, g);
     }
     g.count += 1;
     g.abusable = g.abusable || e.abusable;
+    g.planned = g.planned || !!e.planned;
     if (!g.rights.includes(e.right)) g.rights.push(e.right);
   });
   return [...groups.values()];
@@ -505,6 +507,11 @@ function draw() {
       if (e.targetSid === activeSid) linked.add(e.sourceSid);
     });
   }
+  // Dimming to the active node's DIRECT neighbours is right when the canvas shows
+  // one hop, but in chain mode everything on screen is the chain: it faded out
+  // every object past the first hop — the whole point of the view. Selecting some
+  // other node in the chain still narrows to its neighbourhood.
+  const chainWide = graph.chained && activeSid === focusSid;
 
   graph.drawEdges.forEach((e, edgeIdx) => {
     const a = graph.nodes[e.source], b = graph.nodes[e.target];
@@ -513,7 +520,7 @@ function draw() {
     const [bx, by] = screen(b.x, b.y);
     const rel = activeSid && (e.sourceSid === activeSid || e.targetSid === activeSid);
     const isHoverEdge = edgeIdx === hoverEdge;
-    const dim = activeSid && !rel && !isHoverEdge;
+    const dim = !chainWide && activeSid && !rel && !isHoverEdge;
     ctx.globalAlpha = dim ? .08 : 1;
     const sev = edgeSeverity(e);
     const sevColor = SEVERITY[sev];
@@ -528,9 +535,12 @@ function draw() {
       ctx.shadowColor = e.abusable ? sevColor : "#69a8ff";
     }
     ctx.beginPath();
+    // A planned hop is one YOU create; dashes keep it from reading as collected data.
+    if (e.planned) ctx.setLineDash([7, 6]);
     ctx.moveTo(ax, ay);
     ctx.quadraticCurveTo(cx, cy, bx, by);
     ctx.stroke();
+    ctx.setLineDash([]);
     if (rel || e.abusable) ctx.restore();
     if (rel || isHoverEdge || (e.abusable && graph.drawEdges.length < 90)) {
       const willLabel = isHoverEdge || (rel && graph.drawEdges.length < 24) || (graph.drawEdges.length < 12 && scale > .72);
@@ -545,7 +555,7 @@ function draw() {
   graph.nodes.forEach((n, i) => {
     const isActive = i === activeIdx;
     const isLinked = activeSid && linked.has(n.id);
-    const dim = activeSid && !isActive && !isLinked;
+    const dim = !chainWide && activeSid && !isActive && !isLinked;
     drawNode(n, isActive, dim);
   });
 }
@@ -958,6 +968,12 @@ function renderDelegation(d) {
       <p class="dg-note">${esc(d.note)}</p>
       ${targets ? `<div class="dg-label">Can delegate to</div>${targets}` : ""}
       ${actors ? `<div class="dg-label">Can act on its behalf</div>${actors}` : ""}
+      ${(d.route || []).length ? `
+        <div class="dg-label">Route <em>— no direct hop: S4U2Self here is not forwardable</em></div>
+        <ol class="dg-route">
+          ${d.route.map((r) => `
+            <li data-goto="${esc(r.sid)}"><b>${esc(r.label)}</b><span>${esc(r.step)}</span></li>`).join("")}
+        </ol>` : ""}
       ${(d.canImpersonate || []).length
         ? `<div class="dg-label">Can impersonate <em>— who you become at the far end</em></div>${imp(d.canImpersonate, "yes")}`
         : ""}

@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -524,6 +524,22 @@ def graph_payload(domain_id, view="overview", q="", focus="", rel="abusable", li
     con = db()
     node_rows = con.execute("SELECT * FROM nodes WHERE domain_id=?", (domain_id,)).fetchall()
     edge_rows = con.execute("SELECT * FROM edges WHERE domain_id=?", (domain_id,)).fetchall()
+    # Constrained delegation without protocol transition cannot be used as it
+    # stands: the route runs through an RBCD hop that does not exist yet and that
+    # YOU create. It is not collected data, so it is flagged `planned` and drawn
+    # dashed — but leaving it off the canvas hides the only way the chain works.
+    planned = []
+    if rel == "chain" and focus:
+        frow = next((r for r in node_rows if r["sid"] == focus), None)
+        fprops = props_of(frow, "props") if frow else {}
+        if fprops.get("allowedtodelegate") and not fprops.get("trustedtoauth"):
+            bridge = pick_helper(delegation_context(con, domain_id), focus)
+            if bridge:
+                planned.append({
+                    "source_sid": bridge["sid"],
+                    "target_sid": focus,
+                    "right": "RBCD (you write this)",
+                })
     con.close()
 
     by_sid = {row["sid"]: row for row in node_rows}
@@ -640,6 +656,9 @@ def graph_payload(domain_id, view="overview", q="", focus="", rel="abusable", li
                 if nxt not in depths:
                     depths[nxt] = depths[cur] + 1
                     queue.append(nxt)
+        for pe in planned:
+            visible.add(pe["source_sid"])
+            depths.setdefault(pe["source_sid"], -1)
         # Keep the inbound takeover context for the focused object itself: how you
         # got here matters as much as where it goes.
         for edge in inc[focus]:
@@ -768,6 +787,18 @@ def graph_payload(domain_id, view="overview", q="", focus="", rel="abusable", li
                     "abusable": bool(edge["abusable"]),
                 }
             )
+    for pe in planned:
+        if pe["source_sid"] in idx and pe["target_sid"] in idx:
+            edges.append({
+                "id": "planned:%s:%s" % (pe["source_sid"], pe["target_sid"]),
+                "source": idx[pe["source_sid"]],
+                "target": idx[pe["target_sid"]],
+                "sourceSid": pe["source_sid"],
+                "targetSid": pe["target_sid"],
+                "right": pe["right"],
+                "abusable": True,
+                "planned": True,
+            })
     return {
         "nodes": nodes,
         "edges": edges,
@@ -1333,7 +1364,20 @@ def delegation_summary(sid, label, props, outgoing, incoming, domain, ctx):
                              "targetType": e["target_type"]})
     helper = pick_helper(ctx, sid)
     can_imp, blocked_imp = impersonation_options(ctx, resolved)
+    # The route, in order. Without protocol transition you cannot go straight from
+    # here to the target: the bridge account is what mints the forwardable ticket.
+    route = []
+    if allowed and not proto and not unconstrained:
+        if helper:
+            route.append({"sid": helper["sid"], "label": helper["name"], "type": helper["type"],
+                          "step": "bridge — you grant it RBCD toward this object, then it mints a forwardable ticket"})
+        route.append({"sid": sid, "label": principal_name(label, p), "type": "User",
+                      "step": "replays that ticket through S4U2Proxy (-additional-ticket)"})
+        for c in can_imp[:1]:
+            route.append({"sid": c["sid"], "label": c["name"], "type": c["type"],
+                          "step": "the identity you end up holding — " + c["why"]})
     return {
+        "route": route,
         "canImpersonate": can_imp,
         "blockedImpersonate": blocked_imp,
         "kind": kind,

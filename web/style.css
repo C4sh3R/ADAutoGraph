@@ -1375,3 +1375,38 @@ button { color: inherit; }
 .dg-row.no:hover { background: rgba(255, 84, 116, .15); }
 .dg-row.no b { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255, 84, 116, .6); }
 .dg-svc.no { background: rgba(255, 84, 116, .2); color: var(--danger); }
+
+/* --- the route, and the hop you have to create yourself ------------------ */
+.legend .line.planned {
+  background: repeating-linear-gradient(90deg, var(--accent) 0 5px, transparent 5px 9px);
+}
+.dg-route { margin: 0; padding: 0 0 0 4px; list-style: none; counter-reset: dgstep; }
+.dg-route li {
+  position: relative;
+  counter-increment: dgstep;
+  padding: 7px 9px 7px 30px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .035);
+  cursor: pointer;
+  font-size: 12.5px;
+  transition: background .14s ease, transform .1s ease;
+}
+.dg-route li::before {
+  content: counter(dgstep);
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--dg-tone);
+  color: #061017;
+  font-size: 9.5px;
+  font-weight: 900;
+}
+.dg-route li:hover { background: color-mix(in srgb, var(--dg-tone) 14%, transparent); transform: translateX(2px); }
+.dg-route li b { color: var(--ink); }
+.dg-route li span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.45; }
