@@ -76,7 +76,9 @@ compromised as `owned`** — so the path lights up the moment the browser opens.
 | **Group & OU delegation** | The inspector expands rights a principal wields **indirectly** — through group membership (nested + `AddSelf`/`AddMember`) and through **control of an OU/Container** (`GenericAll` on an OU → the users it holds), each shown with the exact `via` trail. The writeup's `D.Anderson → Marketing OU → E.Rodriguez → Chiefs Marketing → M.Harris` chain, inline. |
 | **Member-of context** | Group memberships surfaced with what they *grant* (e.g. Remote Management Users → WinRM, Protected Users → hardened) — access no ACL edge represents |
 | **ADCS / ESC** | Load `certipy find -json` → **CertTemplate/CA nodes + ESC edges**, flagging exactly **which principal is vulnerable to which ESC** (and every group member inherits it). Plus a built-in **ESC1–ESC16 playbook** modal with chained `certipy` commands, parameterized to the active domain |
-| **Command snippets** | Per-edge **Linux *and* Windows** abuse commands, color-coded, with a copy button |
+| **Kerberos delegation** | A delegation card per object: which flavour is configured (unconstrained · constrained · constrained **without protocol transition** · RBCD), the **exact SPNs** it may delegate to and which object each resolves to, who may act on its behalf, and its own SPNs. When protocol transition is off, the commands are the **RBCD + `-additional-ticket` S4U2Proxy** chain — not the `getST` that dies on `KDC_ERR_BADOPTION`. It also detects an Administrator flagged `sensitive` (NOT_DELEGATED) and impersonates the target's machine account instead |
+| **Follow the chain** | Selecting an object can expand its **whole onward attack chain**, not just the first hop — a bounded BFS over abusable, membership and containment edges, laid out in **columns by distance**, stopping at the domain object instead of dumping the directory |
+| **Command snippets** | Per-edge **Linux *and* Windows** abuse commands, color-coded, with a copy button. Multi-step abuses are emitted as a **numbered recipe** including the steps that come *before* the abuse (join the group, write the OU ACE `-inheritance`) and the cleanup after, using **distinguishedNames** and **sAMAccountNames** so they run as pasted |
 | **Owned, your way** | Toggle owned in the UI **or** pre-seed it on import (used by ADAutoPwn) |
 | **Manage the DB** | Delete any imported graph straight from the domain list (cascades its nodes/edges) |
 
@@ -162,10 +164,10 @@ Small JSON API (handy for scripting / tooling like ADAutoPwn):
 |---------------|---------|
 | `POST /api/import` | Multipart upload: `zip` (BloodHound zip), optional `name`, optional **`owned`** (names/SIDs, separated by spaces/commas/newlines → pre-marked owned) |
 | `GET /api/domains` | List imported domains (id, name, counts) |
-| `GET /api/domain/<id>/graph` | Graph payload for a view (`?view=…&q=…&focus=…`) |
+| `GET /api/domain/<id>/graph` | Graph payload for a view (`?view=…&q=…&focus=…&rel=abusable\|outbound\|inbound\|all\|chain`). `rel=chain` walks the full onward chain from `focus` and tags each node with its `depth` |
 | `GET /api/domain/<id>/search?q=` | Search nodes |
 | `GET /api/domain/<id>/stats` | Node/edge stats |
-| `GET /api/domain/<id>/node/<sid>` | Full object + edges |
+| `GET /api/domain/<id>/node/<sid>` | Full object + edges, inherited rights (`groupDelegated`) and the Kerberos `delegation` card |
 | `POST /api/domain/<id>/owned/<sid>` | Toggle a node's `owned` flag |
 
 ```bash

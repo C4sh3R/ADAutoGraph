@@ -1003,3 +1003,349 @@ button { color: inherit; }
   box-shadow: 0 16px 38px rgba(0,0,0,.36), 0 0 0 1px rgba(88,230,180,.14);
 }
 .domain-card h3 { letter-spacing: -.2px; }
+
+/* ===========================================================================
+   Delegation card, chain mode and command recipes
+   =========================================================================== */
+
+.delegation {
+  --dg-tone: var(--accent2);
+  position: relative;
+  margin: 2px 0 6px;
+  padding: 13px 14px 12px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--dg-tone);
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--dg-tone) 11%, transparent), transparent 62%),
+    rgba(255, 255, 255, .028);
+}
+.delegation.kcd { --dg-tone: var(--gold); }
+.delegation.kcd-npt { --dg-tone: var(--danger); }
+.delegation.unconstrained { --dg-tone: #ff9a3c; }
+.delegation.rbcd { --dg-tone: var(--accent); }
+
+.dg-kind {
+  font-family: var(--display);
+  font-size: 13.5px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+  color: var(--dg-tone);
+}
+.dg-note { margin: 5px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.dg-label {
+  margin: 11px 0 5px;
+  color: var(--soft);
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+}
+.dg-label em { font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--muted); font-style: normal; }
+.dg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  padding: 7px 9px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .035);
+  font-size: 12.5px;
+  transition: background .14s ease, transform .1s ease;
+}
+.dg-row[data-goto] { cursor: pointer; }
+.dg-row[data-goto]:hover { background: color-mix(in srgb, var(--dg-tone) 14%, transparent); transform: translateX(2px); }
+.dg-row b { color: var(--ink); }
+.dg-row small { color: var(--muted); font-size: 10.5px; }
+.dg-svc {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dg-tone) 22%, transparent);
+  color: var(--dg-tone);
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+}
+.dg-spn { color: var(--soft); font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+.dg-arrow { color: var(--muted); }
+.dg-spns { display: flex; flex-wrap: wrap; gap: 6px; }
+.dg-spns code, .dg-hint code {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .34);
+  color: var(--accent);
+  font-size: 11px;
+}
+.dg-hint, .dg-warn {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--soft);
+  background: rgba(255, 255, 255, .035);
+}
+.dg-hint [data-goto] { color: var(--accent); font-weight: 800; cursor: pointer; text-decoration: underline dotted; }
+.dg-warn { background: rgba(255, 84, 116, .11); color: #ffc6d0; }
+
+/* --- "Follow the chain" spans the row: it is the one that changes the canvas */
+.graph-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.graph-rel.chain {
+  grid-column: 1 / -1;
+  border-color: rgba(88, 230, 180, .34);
+  background: linear-gradient(120deg, rgba(88, 230, 180, .16), rgba(105, 168, 255, .1));
+}
+.graph-rel.chain b { color: var(--accent); }
+.graph-rel.chain:hover { border-color: var(--accent); }
+.graph-rel.chain.active { background: var(--accent); }
+.graph-rel.chain.active b, .graph-rel.chain.active span { color: #061017; }
+
+/* --- a numbered recipe reads as steps, not as a pile of commands ---------- */
+.cmd.stepped { border-left: 2px solid rgba(88, 230, 180, .4); }
+.cmd__head .step {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  margin-right: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #061017;
+  font-size: 10px;
+  font-weight: 900;
+  font-style: normal;
+  vertical-align: -3px;
+}
+.cmd__head span { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cmd__head > span { flex: 1; }
+.copy { transition: background .14s ease, color .14s ease, border-color .14s ease; }
+.copy:hover { background: var(--accent); border-color: transparent; color: #061017; font-weight: 800; }
+
+/* --- clickable things should look clickable ------------------------------ */
+#panelBody [data-goto] { cursor: pointer; }
+
+/* --- the tab bar stays reachable through a long command list ------------- */
+.panel-tabs {
+  position: sticky;
+  top: -18px;
+  z-index: 3;
+  padding: 8px 0;
+  margin-top: 0;
+  background: linear-gradient(180deg, var(--panel2) 76%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+/* --- panel scrollbar ----------------------------------------------------- */
+#panelBody { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .16) transparent; }
+#panelBody::-webkit-scrollbar { width: 9px; }
+#panelBody::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .16) padding-box;
+}
+#panelBody::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, .3) padding-box; }
+
+/* --- keyboard focus is visible everywhere -------------------------------- */
+:where(button, input, .mo, .dg-row[data-goto]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* --- respect reduced-motion --------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
+
+/* --- narrow screens: the panel takes the width it needs ------------------ */
+@media (max-width: 720px) {
+  .panel { right: 8px; left: 8px; width: auto; top: 88px; }
+  .graph-actions { grid-template-columns: 1fr; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* --- ESC reachable by creating a machine account (Domain Computers enroll) - */
+.esc-maq {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 212, 90, .3);
+  border-left: 3px solid var(--gold);
+  border-radius: 10px;
+  background: rgba(255, 212, 90, .07);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.esc-maq b { display: block; color: var(--gold); font-size: 11px; letter-spacing: .6px; text-transform: uppercase; }
+.esc-maq > span { color: var(--soft); }
+.esc-maq small { display: block; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.esc-maq small code { padding: 1px 5px; border-radius: 5px; background: rgba(0,0,0,.35); color: var(--gold); }
+
+/* ===========================================================================
+   Commands tab — one collapsible recipe per abuse
+   =========================================================================== */
+
+.cmd-toolbar {
+  position: sticky;
+  top: 44px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 0 10px;
+  margin-bottom: 2px;
+  background: linear-gradient(180deg, var(--panel2) 78%, transparent);
+  backdrop-filter: blur(10px);
+}
+.osfilters { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.035); }
+.cmd-toolbar__count { flex: 1; color: var(--muted); font-size: 11px; font-weight: 700; text-align: right; }
+.osfilter {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 11px;
+  font-size: 11px;
+  font-weight: 800;
+  transition: background .14s ease, color .14s ease;
+}
+.osfilter:hover { color: var(--ink); background: rgba(255,255,255,.07); }
+.osfilter.active { color: #061017; background: var(--accent); }
+.cmd-toolbar > .osfilter { border: 1px solid var(--line); }
+
+.section-hint { margin: -4px 0 10px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+
+.recipe {
+  --sev: var(--accent2);
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--sev);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .028);
+  overflow: hidden;
+  transition: border-color .14s ease, background .14s ease;
+}
+.recipe:hover { background: rgba(255, 255, 255, .045); }
+.recipe.open { border-color: color-mix(in srgb, var(--sev) 42%, transparent); }
+
+.recipe__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--soft);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+.recipe__chev { color: var(--sev); font-size: 11px; transition: transform .16s ease; }
+.recipe.open .recipe__chev { transform: rotate(90deg); }
+.recipe__right { color: var(--sev); font-weight: 900; letter-spacing: -.1px; }
+.recipe__arrow { color: var(--muted); }
+.recipe__target { color: var(--ink); font-weight: 700; }
+.recipe__meta { flex: 1; color: var(--muted); font-size: 10.5px; text-align: right; white-space: nowrap; }
+
+.recipe .via { padding: 0 12px 9px; margin-top: -4px; }
+.recipe__note {
+  margin: 0 12px 9px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: rgba(255, 212, 90, .1);
+  color: #ffe6a4;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.recipe__body { display: none; padding: 0 12px 12px; }
+.recipe.open .recipe__body { display: block; }
+.recipe__body .cmd:first-of-type { margin-top: 0; }
+
+.copy-all {
+  width: 100%;
+  margin-bottom: 9px;
+  padding: 7px 10px;
+  border: 1px dashed color-mix(in srgb, var(--sev) 50%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sev);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  transition: background .14s ease;
+}
+.copy-all:hover { background: color-mix(in srgb, var(--sev) 14%, transparent); }
+
+/* ===========================================================================
+   Confirmation dialog (replaces the native confirm())
+   =========================================================================== */
+
+/* .modal already centres its child and .hidden already wins with !important. */
+.confirm {
+  position: relative;
+  z-index: 1;
+  width: min(430px, calc(100vw - 40px));
+  padding: 26px 24px 20px;
+  border-radius: var(--radius-lg);
+  text-align: center;
+  animation: agPop .2s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes agPop {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+.confirm__icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 14px;
+  border-radius: 999px;
+  background: rgba(255, 84, 116, .14);
+  color: var(--danger);
+  font-size: 21px;
+}
+.confirm__title {
+  margin: 0 0 8px;
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.3px;
+}
+.confirm__text { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.confirm__detail {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 15px;
+}
+.confirm__detail.hidden { display: none; }
+.confirm__detail span {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.confirm__detail b { color: var(--ink); font-weight: 800; }
+.confirm__actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 20px; }
+.confirm__btn {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .05);
+  color: var(--soft);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  transition: background .14s ease, border-color .14s ease, transform .1s ease;
+}
+.confirm__btn:hover { background: rgba(255, 255, 255, .1); transform: translateY(-1px); }
+.confirm__btn.danger { border-color: transparent; background: var(--danger); color: #fff; }
+.confirm__btn.danger:hover { background: #ff3358; }

