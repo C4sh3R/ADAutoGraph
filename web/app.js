@@ -220,6 +220,11 @@ async function loadStats() {
   if (!active) return;
   try {
     const s = await api(`/api/domain/${active.id}/stats`);
+    // The DC host is in the import; only its IP is not. Don't ask for what we know.
+    if (s.dc && s.dc.fqdn && !`${target.dc || ""}`.trim()) {
+      target.dc = s.dc.fqdn;
+      saveTarget(rememberTarget());
+    }
     $("#domainStats").innerHTML = `
       <span class="stat-chip"><b>${s.nodes}</b>nodes</span>
       <span class="stat-chip"><b>${s.edges}</b>edges</span>
@@ -851,6 +856,16 @@ function bindCommandTab(detail) {
     bindCommandTab(detail);
   };
   $$(".copy-all").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
+  // Commit on change, not on every keystroke: re-rendering mid-typing would steal
+  // focus from the field being filled.
+  $$("#panelBody [data-cred]").forEach((el) => el.addEventListener("change", () => {
+    const who = el.dataset.cred.toLowerCase();
+    creds[who] = { ...(creds[who] || {}), [el.dataset.kind]: el.value.trim() };
+    if (!creds[who].pass && !creds[who].hash) delete creds[who];
+    saveTarget(rememberTarget());
+    $("#targetBtn").classList.toggle("armed", targetSet());
+    rerender();
+  }));
   $$("#panelBody [data-toggle]").forEach((b) => b.addEventListener("click", () => {
     // Derive from the DOM, not from the set: the first recipe renders open
     // without being in the set, so a blind toggle would desync the two.
@@ -1048,6 +1063,7 @@ function renderPanel(n) {
     </section>
     <section class="tabpage" data-page="commands">
       ${renderCmdToolbar(abuseOut.length + gd.length)}
+      ${renderCreds(principalsOf(abuseOut, gd))}
       <div class="section-title">Directly held <span class="count">${abuseOut.length}</span></div>
       ${abuseOut.slice(0, 30).map((e, i) => renderRecipe(e, { forceOpen: i === 0 && !openRecipes.size })).join("")
         || `<div class="empty">Nothing this object can abuse on its own.</div>`}
@@ -1083,8 +1099,8 @@ function renderCmd(a) {
   const name = m ? m[2] : (a.tool || "");
   return `
     <div class="cmd${m ? " stepped" : ""}">
-      <div class="cmd__head"><span>${stepChip}<i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(name)}</span><button class="copy" data-cmd="${esc(a.cmd)}">copy</button></div>
-      <pre>${colorCommand(a.cmd)}</pre>
+      <div class="cmd__head"><span>${stepChip}<i class="os-badge ${esc(a.os)}">${esc(a.os)}</i> · ${esc(name)}</span><button class="copy" data-cmd="${esc(fillTarget(a.cmd, a.as))}">copy</button></div>
+      <pre>${colorCommand(fillTarget(a.cmd, a.as, true))}</pre>
     </div>`;
 }
 
@@ -1105,7 +1121,7 @@ function renderRecipe(e, opts = {}) {
   const open = openRecipes.has(key) || !!opts.forceOpen;
   const sev = edgeSeverity(e);
   const steps = cmds.filter((a) => /^\d+\s+·/.test(a.tool || "")).length;
-  const all = cmds.map((a) => a.cmd).join("\n");
+  const all = cmds.map((a) => fillTarget(a.cmd, a.as)).join("\n");
   return `
     <div class="recipe${open ? " open" : ""}" data-recipe="${esc(key)}" style="--sev:${SEVERITY[sev]}">
       <button class="recipe__head" data-toggle="${esc(key)}" aria-expanded="${open}">
@@ -1149,7 +1165,7 @@ function renderSetup(group, idx) {
   if (!cmds.length) return "";
   const key = `setup-${idx}`;
   const open = openRecipes.has(key) || !openRecipes.size;
-  const all = cmds.map((a) => a.cmd).join("\n");
+  const all = cmds.map((a) => fillTarget(a.cmd, a.as)).join("\n");
   return `
     <div class="recipe setup${open ? " open" : ""}" data-recipe="${esc(key)}" style="--sev:${SEVERITY.high}">
       <button class="recipe__head" data-toggle="${esc(key)}" aria-expanded="${open}">
@@ -1193,12 +1209,132 @@ function formatProp(v) {
   return `${v}`;
 }
 
+// ---------------------------------------------------------------------------
+//  Target & credentials
+//
+//  Every generated command carries <dc-ip>, <pass>, <user> … placeholders. Filling
+//  them once turns the panel into something you paste straight into a shell.
+//  These are credentials, so they live ONLY in the browser: nothing is posted to
+//  the server and nothing reaches graph.db, which is a file the user shares and
+//  re-imports. Session storage by default, this browser only if asked.
+// ---------------------------------------------------------------------------
+// Domain-wide facts. These really are global — one DC, one CA per view.
+const TARGET_FIELDS = { dcIp: ["<dc-ip>"], dc: ["<dc>"], ca: ["<ca>"] };
+const TARGET_KEY = "adautograph.target";
+const CREDS_KEY = "adautograph.creds";
+// Sentinels survive esc() untouched, so a substituted value can be highlighted
+// after escaping without the value itself being able to inject markup.
+const FILL_A = "\u0001", FILL_B = "\u0002";
+let target = {};
+// Credentials are NOT global: a single chain legitimately runs as more than one
+// account — the delegating account signs most steps, the RBCD bridge signs the
+// evidence ticket. Each command says which identity it uses, and each identity
+// carries its own secret.
+let creds = {};
+
+function readStore(key) {
+  for (const store of [sessionStorage, localStorage]) {
+    try {
+      const raw = store.getItem(key);
+      if (raw) return JSON.parse(raw) || {};
+    } catch (e) { /* private mode or blocked storage — run without it */ }
+  }
+  return {};
+}
+
+function writeStore(key, value, remember) {
+  const raw = JSON.stringify(value);
+  try {
+    sessionStorage.setItem(key, raw);
+    if (remember) localStorage.setItem(key, raw);
+    else localStorage.removeItem(key);
+  } catch (e) { /* not fatal: the values still apply on this page */ }
+}
+
+function rememberTarget() {
+  try { return !!localStorage.getItem(TARGET_KEY); } catch (e) { return false; }
+}
+
+function loadTarget() { target = readStore(TARGET_KEY); creds = readStore(CREDS_KEY); }
+function saveTarget(remember) { writeStore(TARGET_KEY, target, remember); writeStore(CREDS_KEY, creds, remember); }
+
+function clearTarget() {
+  target = {};
+  creds = {};
+  for (const k of [TARGET_KEY, CREDS_KEY]) {
+    try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch (e) {}
+  }
+}
+
+function targetSet() {
+  return Object.values(target).some((v) => `${v || ""}`.trim()) ||
+         Object.values(creds).some((c) => (c.pass || c.hash || "").trim());
+}
+
+// `who` is the identity the command authenticates as; `mark` wraps substitutions
+// for highlighting, while copying wants the bare string.
+function fillTarget(cmd, who = "", mark = false) {
+  let out = `${cmd ?? ""}`;
+  const wrap = (v) => (mark ? FILL_A + v + FILL_B : v);
+  const swap = (token, value) => {
+    if (value && `${value}`.trim()) out = out.split(token).join(wrap(`${value}`.trim()));
+  };
+  for (const [key, tokens] of Object.entries(TARGET_FIELDS)) {
+    // impacket, nxc, bloodyAD and certipy all resolve a hostname for -dc-ip, and
+    // the DC's FQDN comes from the import — so the IP is an override, not a
+    // prerequisite. Nothing is left as <dc-ip> just because nobody typed an IP.
+    const value = key === "dcIp" ? (target.dcIp || target.dc) : target[key];
+    for (const token of tokens) swap(token, value);
+  }
+  if (who) {
+    // <user> is not a secret: it is simply the identity this step runs as.
+    swap("<user>", who);
+    const c = creds[who.toLowerCase()] || {};
+    for (const token of ["<pass>", "<machine-pass>"]) swap(token, c.pass);
+    for (const token of ["<nt-hash>", "<nthash>", "<hash>"]) swap(token, c.hash);
+  }
+  return out;
+}
+
+function principalsOf(...lists) {
+  const seen = [];
+  for (const list of lists) {
+    for (const e of list || []) {
+      for (const a of [...(e.abuse || []), ...(e.prelude || [])]) {
+        const who = (a.as || "").trim();
+        if (who && !seen.includes(who)) seen.push(who);
+      }
+    }
+  }
+  return seen;
+}
+
+function renderCreds(names) {
+  if (!names.length) return "";
+  return `
+    <div class="creds">
+      <div class="creds__head">Credentials for this object's commands<span>kept in your browser, never sent to the server</span></div>
+      ${names.map((n) => {
+        const c = creds[n.toLowerCase()] || {};
+        return `
+        <div class="creds__row">
+          <b title="${esc(n)}">${esc(short(n, 18))}</b>
+          <input data-cred="${esc(n)}" data-kind="pass" type="password" placeholder="password" value="${esc(c.pass || "")}" autocomplete="off">
+          <input data-cred="${esc(n)}" data-kind="hash" type="password" placeholder="NT hash" value="${esc(c.hash || "")}" autocomplete="off">
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
+loadTarget();
+
 function colorCommand(cmd) {
   return esc(cmd)
     .replace(/(&lt;[^&]+&gt;)/g, `<span class="placeholder">$1</span>`)
     .replace(/('[^']*')/g, `<span class="quote">$1</span>`)
     .replace(/\b(--?[a-zA-Z0-9][a-zA-Z0-9-]*)/g, `<span class="flag">$1</span>`)
-    .replace(/^([a-zA-Z0-9_.-]+)/, `<span class="tool">$1</span>`);
+    .replace(/^([a-zA-Z0-9_.-]+)/, `<span class="tool">$1</span>`)
+    .replace(new RegExp(`${FILL_A}([\\s\\S]*?)${FILL_B}`, "g"), `<span class="filled">$1</span>`);
 }
 
 async function focusGraph(sid, rel) {
@@ -1500,7 +1636,7 @@ function renderAdcs(filter = "") {
       ${e.cmds.map((c) => {
         const cmd = c.replace(/\{domain\}/g, dom);
         if (cmd.trim().startsWith("#")) return `<div class="esc__note">${esc(cmd)}</div>`;
-        return `<div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · certipy</span><button class="copy" data-cmd="${esc(cmd)}">copy</button></div><pre>${colorCommand(cmd)}</pre></div>`;
+        return `<div class="cmd"><div class="cmd__head"><span><i class="os-badge linux">linux</i> · certipy</span><button class="copy" data-cmd="${esc(fillTarget(cmd, target.user || ""))}">copy</button></div><pre>${colorCommand(fillTarget(cmd, target.user || "", true))}</pre></div>`;
       }).join("")}
     </div>`;
   }).join("");
@@ -1524,6 +1660,40 @@ function openAdcs() {
   $("#adcsModal").classList.remove("hidden");
 }
 function closeAdcs() { $("#adcsModal").classList.add("hidden"); }
+
+const TARGET_INPUTS = { dcIp: "#tgtDcIp", dc: "#tgtDc", user: "#tgtUser", ca: "#tgtCa" };
+
+function openTarget() {
+  for (const [key, sel] of Object.entries(TARGET_INPUTS)) $(sel).value = target[key] || "";
+  $("#tgtRemember").checked = rememberTarget();
+  $("#targetModal").classList.remove("hidden");
+  $("#tgtDcIp").focus();
+}
+
+function closeTarget() { $("#targetModal").classList.add("hidden"); }
+
+function refreshAfterTarget() {
+  $("#targetBtn").classList.toggle("armed", targetSet());
+  if (selected >= 0 && graph.nodes[selected]) openPanel(selected);
+  if ($("#adcsModal") && !$("#adcsModal").classList.contains("hidden")) renderAdcs($("#adcsFilter").value || "");
+}
+
+$("#targetBtn").addEventListener("click", openTarget);
+$$('[data-close="target"]').forEach((el) => el.addEventListener("click", closeTarget));
+$("#tgtSave").addEventListener("click", () => {
+  for (const [key, sel] of Object.entries(TARGET_INPUTS)) target[key] = $(sel).value.trim();
+  saveTarget($("#tgtRemember").checked);
+  closeTarget();
+  refreshAfterTarget();
+  toast(targetSet() ? "Commands filled in with your target" : "Placeholders restored");
+});
+$("#tgtClear").addEventListener("click", () => {
+  clearTarget();
+  for (const sel of Object.values(TARGET_INPUTS)) $(sel).value = "";
+  closeTarget();
+  refreshAfterTarget();
+  toast("Target cleared from this browser");
+});
 
 $("#adcsBtn").addEventListener("click", openAdcs);
 $("#adcsFilter").addEventListener("input", (e) => renderAdcs(e.target.value));
@@ -1568,6 +1738,7 @@ $("#adcsJson").addEventListener("change", (ev) => {
 addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   if (confirmResolve) { closeConfirm(false); return; }
+  if (!$("#targetModal").classList.contains("hidden")) { closeTarget(); return; }
   closeAdcs();
 });
 

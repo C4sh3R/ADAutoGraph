@@ -106,6 +106,7 @@
       <button id="fitBtn" title="Fit graph">Fit</button>
       <button id="clearBtn" title="Clear canvas">Clear</button>
       <button id="adcsBtn" title="ADCS / ESC certificate abuse playbook">⚿ ADCS</button>
+      <button id="targetBtn" title="Fill the &lt;…&gt; placeholders in every command">◈ Target</button>
       <span id="statusText">Ready</span>
     </div>
     <div id="hoverTip" class="hover-tip"></div>
@@ -131,6 +132,31 @@
       </div>
     </div>
   </section>
+  <div id="targetModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="targetTitle">
+    <div class="modal__backdrop" data-close="target"></div>
+    <div class="modal__panel glass target">
+      <header class="modal__head">
+        <div>
+          <div class="modal__title" id="targetTitle">◈ Target &amp; credentials</div>
+          <div class="modal__sub">Derived from the import where possible. Set an IP only if the DC name does not resolve for you.</div>
+        </div>
+        <button class="modal__close" data-close="target">×</button>
+      </header>
+      <div class="target__grid">
+        <label class="field"><span>DC IP <i>&lt;dc-ip&gt;</i></span><input id="tgtDcIp" placeholder="optional — defaults to the DC host below" autocomplete="off"></label>
+        <label class="field"><span>DC host <i>&lt;dc&gt;</i></span><input id="tgtDc" placeholder="detected from the graph" autocomplete="off"></label>
+        <label class="field"><span>Your user <i>&lt;user&gt;</i></span><input id="tgtUser" placeholder="only for the ADCS playbook" autocomplete="off"></label>
+        <label class="field"><span>CA name <i>&lt;ca&gt;</i></span><input id="tgtCa" placeholder="filled from certipy JSON" autocomplete="off"></label>
+      </div>
+      <p class="target__note">Domain and DC host come from the import. Passwords and hashes are <b>not</b> here: they belong to a specific account, so you set them per principal in each object's <b>Commands</b> tab.</p>
+      <label class="target__remember"><input id="tgtRemember" type="checkbox"> Keep after I close the tab <small>(stores it in this browser instead of just this session)</small></label>
+      <p class="target__note">These values never leave your browser: they are substituted when a command is rendered or copied, and are never sent to the server or written into <code>graph.db</code>.</p>
+      <div class="target__actions">
+        <button id="tgtClear" class="confirm__btn">Clear</button>
+        <button id="tgtSave" class="confirm__btn danger">Apply</button>
+      </div>
+    </div>
+  </div>
   <div id="confirmModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
     <div class="modal__backdrop" data-close="confirm"></div>
     <div class="confirm glass">
