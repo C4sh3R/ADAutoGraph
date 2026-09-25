@@ -419,6 +419,8 @@ button { color: inherit; }
 .node-head { padding-right: 34px; }
 .node-type { color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-size: 11px; font-weight: 800; }
 .node-title { margin: 5px 0 10px; font-size: 20px; line-height: 1.22; word-break: break-word; }
+.node-sid { margin: -6px 0 10px; font-family: var(--mono, ui-monospace, monospace); font-size: 11px; color: var(--muted); word-break: break-all; cursor: pointer; }
+.node-sid:hover { color: var(--fg, #e6e6e6); }
 .badges { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
 .badge { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; color: var(--soft); font-size: 11px; font-weight: 800; }
 .badge.hv { color: #0d0b00; background: var(--gold); border: 0; }

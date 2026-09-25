@@ -838,6 +838,7 @@ function openPanel(idx) {
     $$(".graph-rel").forEach((b) => b.addEventListener("click", () => focusGraph(detail.id, b.dataset.rel)));
     $$(".ptab").forEach((b) => b.addEventListener("click", () => switchPanelTab(b.dataset.tab)));
     $$("#panelBody [data-goto]").forEach((el) => el.addEventListener("click", () => focusGraph(el.dataset.goto, "all")));
+    $(".node-sid")?.addEventListener("click", (ev) => copyText(ev.currentTarget.dataset.copySid));
     bindCommandTab(detail);
   }).catch((e) => $("#panelBody").innerHTML = `<div class="empty">${esc(e.message)}</div>`);
 }
@@ -857,6 +858,7 @@ function bindCommandTab(detail) {
     $$(".graph-rel").forEach((b) => b.addEventListener("click", () => focusGraph(detail.id, b.dataset.rel)));
     $$(".ptab").forEach((b) => b.addEventListener("click", () => switchPanelTab(b.dataset.tab)));
     $$("#panelBody [data-goto]").forEach((el) => el.addEventListener("click", () => focusGraph(el.dataset.goto, "all")));
+    $(".node-sid")?.addEventListener("click", (ev) => copyText(ev.currentTarget.dataset.copySid));
     bindCommandTab(detail);
   };
   $$(".copy-all").forEach((b) => b.addEventListener("click", () => copyText(b.dataset.cmd)));
@@ -1020,6 +1022,7 @@ function renderPanel(n) {
     <div class="node-head">
       <div class="node-type">${esc(n.type)}</div>
       <div class="node-title">${esc(n.label)}</div>
+      ${n.id ? `<div class="node-sid" title="Click to copy" data-copy-sid="${esc(n.id)}">${esc(n.id)}</div>` : ""}
       <div class="badges">
         ${n.highValue ? `<span class="badge hv">★ HIGH VALUE</span>` : ""}
         ${n.owned ? `<span class="badge owned">☠ OWNED</span>` : ""}

